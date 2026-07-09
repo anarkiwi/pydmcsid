@@ -30,6 +30,7 @@ dev = [
     "pylint>=3",
     "pytest>=7",
     "pytest-cov>=4",
+    "pytest-xdist>=3",
 ]
 
 [project.urls]

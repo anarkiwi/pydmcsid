@@ -13,7 +13,25 @@ SID_REGISTERS = 25
 PAL_CYCLES_PER_FRAME = 19656  # 312 rasterlines * 63 cycles (PAL VBI period)
 
 # DMC JMP-table signature at load ($1000): JMP init / play / stop / FUN_163E.
+# The canonical exact 12 bytes for the $1000 / init-$1037 build.  Recognition is
+# NOT done against these literal bytes: the player is relocatable (the JMP targets
+# are absolute, so they track the load/base address) and the init entry varies
+# across DMC sub-versions.  See ``DMC_JMP_*_REL`` for the load-independent anchor.
 DMC_SIGNATURE = bytes.fromhex("4c37104c85104c2f164c3e16")
+
+# The DMC resident player opens with a 4-entry JMP table (JMP init / play / stop /
+# FUN).  The play/stop/FUN targets sit at these FIXED offsets from the table base
+# regardless of load address -- they identify the exact player body this reader
+# models.  The init target is NOT part of the anchor: it varies across DMC
+# sub-versions (commonly $101d or $1037) without changing the body layout.
+DMC_JMP_PLAY_REL = 0x85
+DMC_JMP_STOP_REL = 0x62F
+DMC_JMP_FUN_REL = 0x63E
+
+# The JMP table is normally AT the load address, but some tunes carry a short
+# relocator stub (commonly 7 bytes) ahead of the resident player.  Scan this many
+# bytes from the load address for the table base.
+DMC_TABLE_SCAN = 24
 
 # code OFFSET-from-load of each table-base operand (the LDA abs,Y operand byte).
 FREQ_LO_OP = 0x1AB  # LDA $1647,Y @ $11AA  (note->freq lo)

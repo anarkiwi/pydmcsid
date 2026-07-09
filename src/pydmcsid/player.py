@@ -37,15 +37,15 @@ class Player:
     def __init__(self, song: Song, subtune: int = 0):
         self.song = song
         self.m = bytearray(song.mem)  # working copy (mutated during playback)
-        self.load = song.load
-        self.rel = song.load - 0x1000  # the player is authored at $1000
+        self.load = song.base  # player origin (JMP-table base; the authored $1000)
+        self.rel = song.base - 0x1000  # the player is authored at $1000
         self.subtune = subtune
         self._writes: List[Tuple[int, int]] = []
         self._curpat: List[Tuple[int, int]] = [(0, 0)] * 3
         self.finished = False
 
         def operand(code_off: int) -> int:
-            idx = song.load + code_off
+            idx = song.base + code_off
             stored = self.m[idx] | (self.m[idx + 1] << 8)
             return (stored + self.rel) & 0xFFFF
 
