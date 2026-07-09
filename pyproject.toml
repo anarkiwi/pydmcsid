@@ -20,6 +20,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio",
 ]
+dependencies = [
+    "pysidtracker>=0.2",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -27,6 +30,7 @@ dev = [
     "pylint>=3",
     "pytest>=7",
     "pytest-cov>=4",
+    "pytest-xdist>=3",
 ]
 
 [project.urls]
