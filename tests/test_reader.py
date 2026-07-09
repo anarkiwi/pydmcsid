@@ -2,8 +2,12 @@
 
 import pytest
 
+import pysidtracker
+from pysidtracker import PlayroutineKind
+
 import pydmcsid
-from pydmcsid.errors import SidParseError
+from pydmcsid import DmcSidParser
+from pydmcsid.errors import DmcError, SidParseError
 
 
 def test_read_sid(tune_path):
@@ -31,3 +35,15 @@ def test_parse_prg_too_short():
     """A truncated PRG raises."""
     with pytest.raises(SidParseError):
         pydmcsid.parse(b"\x00")
+
+
+def test_errors_subclass_pysidtracker():
+    """The pydmcsid error hierarchy re-parents onto ``pysidtracker.SidError``."""
+    assert issubclass(DmcError, pysidtracker.SidError)
+    assert issubclass(SidParseError, pysidtracker.SidError)
+
+
+def test_parser_detect_direct(tune_path):
+    """``DmcSidParser().detect`` classifies a real DMC tune as direct-load."""
+    detection = DmcSidParser().detect(tune_path)
+    assert detection.kind is PlayroutineKind.DIRECT

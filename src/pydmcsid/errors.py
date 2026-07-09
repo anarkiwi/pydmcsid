@@ -1,7 +1,9 @@
 """Exceptions for pydmcsid."""
 
+from pysidtracker import SidError
 
-class DmcError(Exception):
+
+class DmcError(SidError):
     """Base error for all pydmcsid failures."""
 
 

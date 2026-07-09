@@ -5,9 +5,11 @@ resident, and the song tables are relocated into it).  :func:`read` loads the C6
 memory image and its load address; the player walks the resident tables directly.
 """
 
-import struct
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from pysidtracker import BaseSidParser, SidError, SidImage
 
 from pydmcsid import constants
 from pydmcsid.errors import SidParseError
@@ -33,34 +35,24 @@ class Song:
 
 def parse(data: bytes) -> Song:
     """Parse SID/PRG ``data`` bytes into a :class:`Song`."""
-    if data[:4] in (b"PSID", b"RSID"):
-        data_off = struct.unpack_from(">H", data, 6)[0]
-        load = struct.unpack_from(">H", data, 8)[0]
-        songs = struct.unpack_from(">H", data, 0x0E)[0]
-        start = struct.unpack_from(">H", data, 0x10)[0]
-        body = data[data_off:]
-        if load == 0:
-            if len(body) < 2:
-                raise SidParseError("PSID body too short for embedded load address")
-            load = body[0] | (body[1] << 8)
-            body = body[2:]
-        name = data[0x16:0x36].split(b"\x00", 1)[0].decode("latin-1")
-        author = data[0x36:0x56].split(b"\x00", 1)[0].decode("latin-1")
-    else:  # raw .prg: first two bytes = load address
-        if len(data) < 2:
-            raise SidParseError("PRG too short")
-        load = data[0] | (data[1] << 8)
-        body = data[2:]
+    try:
+        image = SidImage.from_bytes(data)
+    except SidError as exc:
+        raise SidParseError(str(exc)) from exc
+    header = image.header
+    if header is not None:
+        songs = header.songs
+        start = header.start_song
+        name = header.name
+        author = header.author
+    else:  # bare .prg: single subtune, no metadata
         songs = 1
         start = 1
         name = author = ""
-    mem = bytearray(0x10000)
-    end = min(load + len(body), 0x10000)
-    mem[load:end] = body[: end - load]
     song = Song(
-        mem=mem,
-        load=load,
-        image_len=end - load,
+        mem=image.mem,
+        load=image.load,
+        image_len=image.end - image.load,
         songs=songs,
         start_song=start,
         name=name,
@@ -74,3 +66,20 @@ def parse(data: bytes) -> Song:
 def read(path) -> Song:
     """Read a DMC tune from a ``.sid``/``.prg`` file path."""
     return parse(Path(path).read_bytes())
+
+
+class DmcSidParser(BaseSidParser):
+    """DMC parser exposing the shared :class:`BaseSidParser` API."""
+
+    error_class = SidParseError
+
+    def parse(self, data: bytes, **kwargs: Any) -> Song:
+        """Parse ``data`` into a :class:`Song` (see :func:`parse`)."""
+        return parse(data)
+
+    def recognize(self, image: SidImage):
+        """Return the load address when the DMC signature is at the load base."""
+        sig = image.slice(image.load, len(constants.DMC_SIGNATURE))
+        if sig == constants.DMC_SIGNATURE:
+            return image.load
+        return None
