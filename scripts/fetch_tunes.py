@@ -34,12 +34,14 @@ MIRROR = os.environ.get("HVSC_MIRROR", "https://hvsc.brona.dk/HVSC/C64Music").rs
     "/"
 )
 
-# id -> HVSC relative path (the 4 DMC byte-exact validation references).
+# id -> HVSC relative path (the DMC byte-exact validation references).
 TUNES = {
     "ode": "MUSICIANS/A/Ass_It/Ode_to_Music.sid",
     "faces": "DEMOS/A-F/Faces.sid",
     "fear": "DEMOS/A-F/Fear_Me.sid",
     "wladca": "GAMES/S-Z/Wladca.sid",
+    "summertime": "MUSICIANS/B/Bart/Summertime.sid",
+    "action_tank": "MUSICIANS/R/Robric/Action_Tank_2.sid",
 }
 
 

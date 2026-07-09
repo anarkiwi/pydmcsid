@@ -15,40 +15,64 @@ from pydmcsid import constants
 from pydmcsid.errors import SidParseError
 
 
-def find_dmc_base(mem, load: int) -> Optional[int]:
-    """Locate the DMC player's JMP-table base, or ``None`` if not a DMC image.
+def _play_body_ok(mem, base: int) -> bool:
+    """True if the play body at ``base+$85`` is the exact DMC play routine.
 
-    Scans from ``load`` for the opening 4-entry JMP table whose play/stop/FUN
-    targets sit at the canonical offsets from the table base (see
-    :mod:`pydmcsid.constants`).  This anchor is load-independent (the JMP targets
-    are absolute, so they track the base) and init-independent (the init entry
-    varies across DMC sub-versions), so it recognises the relocated and
-    stub-prepended builds of the same player body -- not just the ``$1000`` /
-    init-``$1037`` original.  Returns the table base (the player origin).
+    Confirms the opening ``DEC tempo_ctr`` (``CE`` + operand ``base+$718``); this
+    is load-independent (the operand tracks the base) and body-specific.
     """
-    want = (
-        constants.DMC_JMP_PLAY_REL,
-        constants.DMC_JMP_STOP_REL,
-        constants.DMC_JMP_FUN_REL,
-    )
+    body = base + constants.DMC_PLAY_BODY_REL
+    if body + 3 > len(mem):
+        return False
+    if mem[body] != constants.DMC_DEC_OPCODE:
+        return False
+    operand = mem[body + 1] | (mem[body + 2] << 8)
+    return operand == ((base + constants.DMC_TEMPO_WORK_REL) & 0xFFFF)
+
+
+def find_dmc_base(mem, load: int) -> Optional[int]:
+    """Locate the DMC player's play-body base, or ``None`` if not a DMC image.
+
+    Scans from ``load`` for the opening dispatch JMP table whose *play* entry
+    (the second ``JMP``) targets ``base+$85`` AND whose play body there is the
+    exact DMC play routine (see :func:`_play_body_ok`).  This anchor is
+    load-independent (the JMP target and the body's own operand both track the
+    base) and init-independent (the init entry varies across DMC sub-versions).
+
+    Unlike the original 4-entry ``play/stop/FUN`` anchor it also accepts the
+    2-entry (init/play only) dispatch builds that carry the *identical* play
+    body -- the same engine with a shorter dispatch table -- while still
+    rejecting the reorganised player bodies (different play offset / work-RAM
+    layout) that only share the DMC data-table structure.  Returns the base.
+    """
     for off in range(constants.DMC_TABLE_SCAN):
         base = load + off
-        if base + 12 > len(mem):
+        if base + 6 > len(mem):
             break
-        if not (
-            mem[base] == 0x4C
-            and mem[base + 3] == 0x4C
-            and mem[base + 6] == 0x4C
-            and mem[base + 9] == 0x4C
-        ):
+        # init entry (a JMP) then the play entry (a JMP to base+$85).
+        if mem[base] != 0x4C or mem[base + 3] != 0x4C:
             continue
-        rels = tuple(
-            ((mem[base + i + 1] | (mem[base + i + 2] << 8)) - base) & 0xFFFF
-            for i in (3, 6, 9)
-        )
-        if rels == want:
+        play = mem[base + 4] | (mem[base + 5] << 8)
+        if ((play - base) & 0xFFFF) != constants.DMC_PLAY_BODY_REL:
+            continue
+        if _play_body_ok(mem, base):
             return base
     return None
+
+
+def dmc_byte_exact(mem, base: int) -> bool:
+    """True if the body at ``base`` is the generation pydmcsid plays byte-exact.
+
+    The player transcribes the init-``$37`` generation (pattern markers
+    ``$fe/$fd/$ff``); the later init-``$1d`` generation shares the play-body
+    anchor and data-table layout but re-encodes the markers as ``$7e/$7d/$7f``
+    and restructures note setup, so pydmcsid recognises + parses it but does not
+    reproduce it byte-exact.  Distinguished by the ``CMP #$xx`` marker operand.
+    """
+    idx = base + constants.DMC_MARKER_OP_REL
+    if idx >= len(mem):
+        return False
+    return mem[idx] == constants.DMC_MARKER_V37
 
 
 @dataclass
@@ -67,6 +91,15 @@ class Song:
     def is_dmc(self) -> bool:
         """Whether the resident binary carries the DMC JMP-table signature."""
         return find_dmc_base(self.mem, self.load) is not None
+
+    def byte_exact(self) -> bool:
+        """Whether pydmcsid's player reproduces this body byte-exact.
+
+        True for the init-``$37`` generation; False for a recognised DMC body of
+        a later generation (e.g. init-``$1d``) that parses but is not yet played
+        byte-exact.  See :func:`dmc_byte_exact`.
+        """
+        return dmc_byte_exact(self.mem, self.base)
 
 
 def parse(data: bytes) -> Song:

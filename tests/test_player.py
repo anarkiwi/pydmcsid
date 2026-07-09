@@ -37,10 +37,10 @@ def _lead_aligned_equal(oracle, rendered):
 
 
 def test_is_dmc(tune_path):
-    """A DMC tune carries the player JMP-table signature."""
+    """A DMC tune carries the player signature and is the byte-exact generation."""
     song = pydmcsid.read(tune_path)
     assert song.is_dmc()
-    assert song.load == 0x1000
+    assert song.byte_exact()  # every frozen-grid reference is the $37 generation
 
 
 def test_byte_exact_vs_oracle(tune_id, tune_path):

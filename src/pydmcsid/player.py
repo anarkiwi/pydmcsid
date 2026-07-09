@@ -45,9 +45,13 @@ class Player:
         self.finished = False
 
         def operand(code_off: int) -> int:
+            # The per-tune table-base operands are ABSOLUTE addresses the
+            # assembler already relinked to the tune's load address (the same
+            # relink that moves the JMP-table targets the anchor keys on), so
+            # they are used as-is -- NOT shifted by ``rel``.  ``rel`` only
+            # relocates the player's fixed work-RAM cells (see ``_a``).
             idx = song.base + code_off
-            stored = self.m[idx] | (self.m[idx + 1] << 8)
-            return (stored + self.rel) & 0xFFFF
+            return (self.m[idx] | (self.m[idx + 1] << 8)) & 0xFFFF
 
         self.b_freqlo = operand(constants.FREQ_LO_OP)
         self.b_freqhi = operand(constants.FREQ_HI_OP)

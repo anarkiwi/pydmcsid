@@ -33,6 +33,30 @@ DMC_JMP_FUN_REL = 0x63E
 # bytes from the load address for the table base.
 DMC_TABLE_SCAN = 24
 
+# Play-body anchor.  The play routine opens with ``DEC tempo_ctr`` (``CE lo hi``)
+# where the tempo counter is the fixed work cell ``base+$718`` (the authored
+# ``$1718``).  This two-fact check (opcode + operand==base+$718) is load-
+# invariant and identifies the exact play body pydmcsid transcribes, so it
+# recognises the same body whether the opening JMP table has 4 entries
+# (init/play/stop/FUN) or only 2 (init/play) -- the 2-entry builds carry the
+# identical body but a shorter dispatch table, which the old 4-JMP anchor
+# rejected.
+DMC_PLAY_BODY_REL = 0x85  # play routine offset from base
+DMC_DEC_OPCODE = 0xCE  # DEC abs -- first opcode of the play body
+DMC_TEMPO_WORK_REL = 0x718  # tempo counter work cell, relative to base
+
+# Body-generation marker: the first pattern-command compare in the pattern walk,
+# ``CMP #$xx`` at ``base+$126``.  The body pydmcsid plays byte-exact (the
+# init-``$37`` generation) uses the pattern-end/tie/loop markers $FE/$FD/$FF, so
+# this byte is $FE.  A later generation (init-``$1d``) re-encodes them as
+# $7E/$7D/$7F (and adds restructured note-setup subroutines): same play-body
+# anchor and data-table layout, but a DIFFERENT body pydmcsid does not yet
+# reproduce byte-exact.  Recognition accepts both (both are DMC); this marker
+# tells callers which generation, i.e. whether playback is byte-exact.
+DMC_MARKER_OP_REL = 0x126  # CMP #$fe operand offset from base
+DMC_MARKER_V37 = 0xFE  # byte-exact generation (init-$37 markers $fe/$fd/$ff)
+DMC_MARKER_V1D = 0x7E  # later generation (init-$1d markers $7e/$7d/$7f)
+
 # code OFFSET-from-load of each table-base operand (the LDA abs,Y operand byte).
 FREQ_LO_OP = 0x1AB  # LDA $1647,Y @ $11AA  (note->freq lo)
 FREQ_HI_OP = 0x1B1  # LDA $16A7,Y @ $11B0  (note->freq hi)
