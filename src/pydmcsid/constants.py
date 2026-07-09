@@ -64,6 +64,37 @@ INSTR_OP = 0x227  # LDA $17B0,Y @ $1226  (stride-11 instrument records)
 PATTERN_LO_OP = 0x103  # LDA $1829,Y @ $1102  (pattern ptr lo)
 PATTERN_HI_OP = 0x108  # LDA $182D,Y @ $1107  (pattern ptr hi)
 ORDER_TABLE_OP = 0x3E  # LDA $17F0,Y @ $103D  (per-voice orderlist base table)
+ORDER_TABLE_OP_V1D = 0x51  # LDA <ordertable>,Y @ $1050 (init-$1d relocated the read)
+VIB_SEED_OP = 0x2F2  # LDA <vibscale>,Y @ $12F1 (init-$1d vib-delta seed, note-indexed)
+
+# init-$1d relocates a 9-cell work block (per-voice note[3]/inst[3] + the three
+# filter/vibrato globals) as a unit.  Its base varies across $1d sub-layouts
+# (the id-string length shifts it), so it is read from the note-store operand at
+# $11A6; the block is contiguous (inst=note+3, filt=note+6, toggle=+7, bend=+8).
+NOTE_CELL_OP = 0x1A7  # STA <note>,X @ $11A6
+INST_CELL_OP = 0x11A  # STA <inst>,X @ $1119 (== note+3 in the modelled layout)
+FILT_CELL_OP = 0xA7  # LDA <filt> @ $10A6 (== note+6 in the modelled layout)
+
+# init-$1d rest/tie/legato tail: the JMP at $1180 (target of the shared $117D
+# handler) sends a rest/tie/legato row to either the full steady tick ($1322) or
+# a plain waveform re-output ($1591).  Both encodings occur across $1d tunes; the
+# target rel-to-base is read from the JMP operand.
+REST_TAIL_OP = 0x181  # JMP <tail> @ $1180
+REST_TAIL_1322 = 0x322  # steady tick (PW/filter/glide/vibrato + output)
+REST_TAIL_1591 = 0x591  # waveform re-output only
+
+# init-$1d hard-restart burst FREQ immediate: ``LDA #imm`` at $130A ($ff for
+# nearly all tunes, but a per-tune code constant a few builds hand-edited).
+BURST_IMM_REL = 0x30B
+
+# Byte-exactness gates for the init-$1d body: a few hand-customized $1d builds
+# share the marker+layout but wrap the play entry (a relocator/extra-code stub)
+# or relocate the AD/SR write out of the modelled $184B helper.  These are
+# recognised as the $1d generation but NOT reproduced byte-exact, so they are
+# gated out of the byte-exact claim.
+STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
+INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
+INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)
 PW_TABLE_OP = 0x358  # LDA $17B3,Y @ $1357  (PW-sweep nibble table)
 ARP_CTRL_OP = 0x59C  # LDA $17C6,Y @ $159B  (wavetable ctrl/arp)
 ARP_NOTE_OP = 0x5B9  # LDA $17CA,Y @ $15B8  (wavetable note)

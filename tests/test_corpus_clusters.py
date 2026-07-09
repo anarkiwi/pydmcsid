@@ -4,21 +4,21 @@ Complements ``test_corpus.py`` with real HVSC representatives of the clusters
 the original 4-JMP anchor rejected (2-entry-dispatch same-body builds) or the
 absolute-operand fix repaired (relocated builds), plus the later-generation
 (init-``$1d``) body that is recognised + parsed but not yet byte-exact.  Paths
-only (``fixtures/dmc_clusters.txt``); resolved under ``$HVSC`` and skips cleanly
-when unset or when a listed tune is absent from this HVSC revision.
+only (``fixtures/dmc_clusters.txt``); each tune is FETCHED + CACHED on demand
+(HVSC mirror, honouring a local ``$HVSC`` tree) and skips only if genuinely
+unreachable.
 """
 
-import os
 from pathlib import Path
 
 import pytest
 
+import fetch_tunes
 import pydmcsid
 from pydmcsid import DmcSidParser
 from pysidtracker import PlayroutineKind
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-HVSC = os.environ.get("HVSC")
 
 
 def _cluster_rows():
@@ -37,12 +37,10 @@ CLUSTERS = _cluster_rows()
 
 
 def _resolve(rel):
-    if not HVSC:
-        pytest.skip("HVSC not set; DMC cluster corpus test needs a local HVSC tree")
-    path = Path(HVSC) / rel
-    if not path.exists():
-        pytest.skip("tune absent from this HVSC revision: %s" % rel)
-    return path
+    try:
+        return fetch_tunes.fetch(rel)
+    except fetch_tunes.FetchError as exc:
+        pytest.skip("tune unreachable: %s" % exc)
 
 
 def test_clusters_nonempty():

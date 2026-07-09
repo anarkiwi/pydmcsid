@@ -58,6 +58,18 @@ def _dmc_body(base, init_rel=0x1D, marker=0xFE):
     tempo = (base + 0x718) & 0xFFFF
     body[0x85:0x88] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
     body[0x126] = marker
+    # Seed the $1d note/inst/filter cell operands (note, note+3, note+6) so a
+    # $7e-marker body satisfies the modelled-layout check in ``dmc_variant``.
+    for off, cell in ((0x1A7, 0x12), (0x11A, 0x15), (0xA7, 0x18)):
+        addr = (base + cell) & 0xFFFF
+        body[off : off + 2] = bytes([addr & 0xFF, (addr >> 8) & 0xFF])
+    # Rest-tail JMP ($1180 -> $1322) and AD/SR-helper JSR ($1230 -> $184b) so the
+    # body also satisfies the byte-exactness gates.
+    for off, tgt_rel in ((0x181, 0x322), (0x231, 0x84B)):
+        tgt = (base + tgt_rel) & 0xFFFF
+        body[off : off + 2] = bytes([tgt & 0xFF, (tgt >> 8) & 0xFF])
+    body[0x180] = 0x4C
+    body[0x230] = 0x20
     return bytes(body)
 
 
@@ -100,11 +112,21 @@ def test_parse_two_entry_dispatch_same_body():
     assert song.byte_exact()
 
 
-def test_later_generation_recognised_not_byte_exact():
-    """A later-generation body (marker $7e) is recognised but not byte-exact."""
+def test_later_generation_recognised_byte_exact():
+    """The init-$1d body (marker $7e) is recognised and now played byte-exact."""
     prg = b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x7E)
     song = DmcSidParser().parse(prg)
     assert song.is_dmc()
+    assert song.variant() == "v1d"
+    assert song.byte_exact()
+
+
+def test_unmodelled_generation_recognised_not_byte_exact():
+    """A DMC body with an unknown marker is recognised but not byte-exact."""
+    prg = b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x55)
+    song = DmcSidParser().parse(prg)
+    assert song.is_dmc()
+    assert song.variant() is None
     assert not song.byte_exact()
 
 

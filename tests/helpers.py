@@ -17,6 +17,15 @@ TUNES = {
     # A relocated build (load=$6600): byte-exact after the absolute-operand fix
     # (previously recognised but mis-played by the double-counted ``rel``).
     "action_tank": ("MUSICIANS/R/Robric/Action_Tank_2.sid", "Action_Tank_2.grid.txt"),
+    # init-$1d generation ($7e/$7d/$7f markers), now reproduced byte-exact: the
+    # base-layout body, a relocated build (load=$5000), and the relocated-cell
+    # sub-layout (note cells at $1630) respectively.
+    "glorious": ("MUSICIANS/B/Bakker_Nantco/Glorious.sid", "Glorious.grid.txt"),
+    "rocket": (
+        "MUSICIANS/B/Bayliss_Richard/Rocket_n_Roll.sid",
+        "Rocket_n_Roll.grid.txt",
+    ),
+    "techno_bah": ("MUSICIANS/D/Doxx/Techno_BAH.sid", "Techno_BAH.grid.txt"),
 }
 
 

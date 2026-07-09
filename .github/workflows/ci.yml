@@ -25,12 +25,23 @@ jobs:
         run: black --check src/pydmcsid tests
       - name: pylint
         run: pylint src/pydmcsid tests
+      - name: Cache HVSC test tunes
+        # DMC tunes are HVSC copyright works (NEVER committed); they are fetched
+        # on demand into the gitignored tunecache.  Cache that dir across runs,
+        # keyed on the corpus lists + fetch script, so tunes download once.
+        uses: actions/cache@v4
+        with:
+          path: tests/.tunecache
+          key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/fixtures/dmc_clusters.txt', 'scripts/fetch_tunes.py') }}
+          restore-keys: |
+            hvsc-tunecache-
       - name: pytest + coverage (> 85%)
         # Tunes are HVSC copyright works (never committed); CI has no
         # SIDTRACE_BIN, so the byte-exact player tests validate against the
         # committed frozen oracle grids, and tune-dependent tests fetch from
-        # the HVSC mirror (skipping cleanly if the mirror is unreachable).
-        run: pytest --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
+        # the HVSC mirror into the cached tunecache (skipping only a tune that
+        # is genuinely unreachable).
+        run: pytest -n auto --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
 
   build:
     runs-on: ubuntu-latest

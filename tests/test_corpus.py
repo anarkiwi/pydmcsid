@@ -2,26 +2,25 @@
 
 Runs the reader against a deterministic, representative sample of real HVSC DMC
 tunes (``fixtures/dmc_corpus.txt`` -- paths only; HVSC works are copyright and are
-never committed).  Resolved under a local ``$HVSC`` tree: the test RUNS for real
-when ``$HVSC`` is present and SKIPS cleanly when it is not (or when a listed tune
-is absent from this HVSC revision).
+never committed).  Each tune is FETCHED + CACHED on demand (HVSC mirror, honouring
+a local ``$HVSC`` tree) into the gitignored cache, so the test RUNS for real in CI
+-- it skips an individual tune only if that tune is genuinely unreachable.
 
 Each sampled tune must ``parse``/``read`` successfully and classify as
 :attr:`PlayroutineKind.DIRECT` -- the DMC player is resident, so recognition
 succeeds statically with no emulated init.
 """
 
-import os
 from pathlib import Path
 
 import pytest
 
+import fetch_tunes
 import pydmcsid
 from pydmcsid import DmcSidParser, constants
 from pysidtracker import PlayroutineKind
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-HVSC = os.environ.get("HVSC")
 
 
 def _corpus_paths():
@@ -33,12 +32,10 @@ CORPUS = _corpus_paths()
 
 
 def _resolve(rel):
-    if not HVSC:
-        pytest.skip("HVSC not set; DMC corpus test needs a local HVSC tree")
-    path = Path(HVSC) / rel
-    if not path.exists():
-        pytest.skip("tune absent from this HVSC revision: %s" % rel)
-    return path
+    try:
+        return fetch_tunes.fetch(rel)
+    except fetch_tunes.FetchError as exc:
+        pytest.skip("tune unreachable: %s" % exc)
 
 
 def test_corpus_nonempty():
