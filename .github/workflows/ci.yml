@@ -12,7 +12,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -29,7 +29,7 @@ jobs:
         # DMC tunes are HVSC copyright works (NEVER committed); they are fetched
         # on demand into the gitignored tunecache.  Cache that dir across runs,
         # keyed on the corpus lists + fetch script, so tunes download once.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tests/.tunecache
           key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/fixtures/dmc_clusters.txt', 'scripts/fetch_tunes.py') }}
@@ -46,7 +46,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
