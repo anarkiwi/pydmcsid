@@ -48,6 +48,23 @@ TUNES = {
     "dum_dum": ("MUSICIANS/F/Froyd/Dum_Dum.sid", "Dum_Dum.grid.txt"),
     "blutal": ("MUSICIANS/C/CreaMD/Blutal_Haldcole.sid", "Blutal_Haldcole.grid.txt"),
     "short_fusion": ("MUSICIANS/P/PRI/Short_Fusion.sid", "Short_Fusion.grid.txt"),
+    # $95 engine (compact, self-modifying body, play at base+$95): a distinct
+    # earlier lineage reproduced byte-exact by Player95.  Happy_Rave is the
+    # canonical body; Popyjava_Pyjakoof and Intro_Music exercise the wildcarded
+    # tempo-reload seed ($10bf = $02 / $00); I_Love_DMC is a second author's build.
+    "happy_rave": ("DEMOS/G-L/Happy_Rave.sid", "Happy_Rave.grid.txt"),
+    "popyjava": (
+        "MUSICIANS/B/Booker/Popyjava_Pyjakoof.sid",
+        "Popyjava_Pyjakoof.grid.txt",
+    ),
+    "intro_music": (
+        "MUSICIANS/B/Bakewell_Dwayne/Intro_Music.sid",
+        "Intro_Music.grid.txt",
+    ),
+    "i_love_dmc": (
+        "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
+        "I_Love_DMC.grid.txt",
+    ),
 }
 
 

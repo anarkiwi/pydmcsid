@@ -253,6 +253,114 @@ def test_a1_norm_body_straddling_instruction_returns_none():
         pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
 
 
+def _n95_body(base, order_tbl=0x1900, reload_seed=0x07):
+    """A synthetic $95 body: dispatch (play->base+$95) + the family fixtures.
+
+    NOP-fills the play body ($95..$718) with one per-tune-data operand (wildcarded
+    by the signature) and the self-modified tempo-reload seed at $10bf, and seeds
+    the init order-table copy ``LDA <order>,Y : STA $17d9,X`` store site.  The
+    caller monkeypatches ``constants.N95_BODY_SHA256`` to this body's normalised
+    hash, exercising the recognition machinery without embedding the real engine.
+    """
+    from pydmcsid import constants
+
+    del base  # bodies are authored load-relative to $1000
+    mem = bytearray(0x2000)
+    mem[0:6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0x95, 0x10])  # play JMP -> base+$95
+    # init order-table copy store site: B9 <order,Y> : 9D D9 17 (STA $17d9,X)
+    mem[0x46:0x4C] = bytes([0xB9, order_tbl & 0xFF, order_tbl >> 8, 0x9D, 0xD9, 0x17])
+    for off in range(0x95, 0x719):  # NOP-fill the play body
+        mem[off] = 0xEA
+    mem[0x95:0x98] = bytes([0xAD, 0x00, 0x19])  # LDA $1900: a per-tune-data operand
+    mem[constants.N95_RELOAD_SEED_REL] = reload_seed  # self-modified reload seed
+    return bytes(mem)
+
+
+def _n95_hash(body):
+    import hashlib
+
+    from pydmcsid.reader import _norm_n95_body
+
+    img = bytearray(0x10000)
+    img[0x1000 : 0x1000 + len(body)] = body  # body is load-relative to $1000
+    return hashlib.sha256(_norm_n95_body(img, 0x1000)).hexdigest()
+
+
+def test_n95_body_recognised_byte_exact(monkeypatch):
+    """A synthetic $95 body is recognised as variant "n95" and played byte-exact."""
+    from pydmcsid import constants
+
+    body = _n95_body(0x1000)
+    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body))
+    song = pydmcsid.parse(b"\x00\x10" + body)
+    assert song.is_dmc()
+    assert song.base == 0x1000
+    assert song.variant() == "n95"
+    assert song.byte_exact()  # bare PRG: play/init at base, order anchor present
+
+
+def test_n95_reload_seed_wildcarded(monkeypatch):
+    """The self-modified $10bf tempo-reload seed is wildcarded (init overwrites it).
+
+    Two builds differing only in that seed byte share the normalised signature, so
+    a single hash recognises both -- mirroring the real 415/88 sub-clusters.
+    """
+    from pydmcsid import constants
+    from pydmcsid.reader import n95_order_table_base
+
+    body1 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x01)
+    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body1))
+    song1 = pydmcsid.parse(b"\x00\x10" + body1)
+    assert n95_order_table_base(song1.mem, 0x1000) == 0x1888  # read from store site
+    assert song1.variant() == "n95"
+    # A different reload seed normalises to the SAME body hash.
+    body2 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x00)
+    assert _n95_hash(body2) == constants.N95_BODY_SHA256
+    song2 = pydmcsid.parse(b"\x00\x10" + body2)
+    assert song2.variant() == "n95"
+    assert song2.byte_exact()
+
+
+def test_n95_wrapped_vectors_not_byte_exact(monkeypatch):
+    """A $95 build whose header play/init resolve outside the player is gated out."""
+    from pydmcsid import constants
+    from pydmcsid.reader import dmc_byte_exact
+
+    body = _n95_body(0x1000)
+    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body))
+    mem = bytearray(0x10000)
+    mem[0x1000 : 0x1000 + len(body)] = body
+    assert dmc_byte_exact(mem, 0x1000, play=0x1003, init=0x1000)  # unwrapped
+    assert not dmc_byte_exact(mem, 0x1000, play=0x2D89, init=0x2D80)  # wrapper
+
+
+def test_n95_does_not_misfire_on_base_body(monkeypatch):
+    """The $95 detector never claims the $85 (v37/v1d) synthetic bodies."""
+    from pydmcsid import constants
+    from pydmcsid.reader import _n95_body_ok
+
+    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(_n95_body(0x1000)))
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    assert v37.variant() == "v37"
+    assert not _n95_body_ok(v37.mem, 0x1000)
+
+
+def test_n95_norm_body_straddling_instruction_returns_none():
+    """A $95 body whose opcode walk straddles the body end is rejected, not crashed."""
+    from pydmcsid.reader import _norm_n95_body, find_dmc_base
+
+    mem = bytearray(0x10000)
+    base = 0x1000
+    mem[base : base + 6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0x95, 0x10])  # play->$95
+    mem[base + 0x95] = 0xEA  # a 1-byte NOP shifts the JMP-abs run off alignment
+    for off in range(base + 0x96, base + 0x719):  # JMP-abs (3-byte) fill: straddles
+        mem[off] = 0x4C
+    assert _norm_n95_body(mem, base) is None  # no IndexError
+    assert find_dmc_base(mem, base) is None  # cleanly not recognised
+    with pytest.raises(SidParseError):
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
+
+
 def test_reject_play_jmp_but_wrong_body():
     """Play JMP targets $85 but the body there is not the DMC play routine."""
     from pydmcsid.reader import find_dmc_base  # local import: internal helper

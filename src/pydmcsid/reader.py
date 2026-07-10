@@ -63,8 +63,10 @@ def find_dmc_base(mem, load: int) -> Optional[int]:
     for match in find_code_all(image, _DMC_DISPATCH, start=load, end=end):
         base = match.addr
         play = match.captures["play"]
-        if _play_body_ok(image.mem, play, base) or _play_body_a1_ok(
-            image.mem, play, base
+        if (
+            _play_body_ok(image.mem, play, base)
+            or _play_body_a1_ok(image.mem, play, base)
+            or _play_body_95_ok(image.mem, play, base)
         ):
             return base
     return None
@@ -83,6 +85,74 @@ def _play_body_a1_ok(mem, play: int, base: int) -> bool:
     if play != (base + constants.DMC_PLAY_A1_REL) & 0xFFFF:
         return False
     return _a1_body_ok(mem, base)
+
+
+def _play_body_95_ok(mem, play: int, base: int) -> bool:
+    """True if the play routine is the reorganised ``$95`` engine body.
+
+    The ``$95`` generation (see :func:`_n95_body_ok`) dispatches play to
+    ``base+$95`` (not ``base+$85``/``base+$a1``) and has its own compact,
+    self-modifying work-RAM map, so it is recognised by a separate anchor: the
+    dispatch play-JMP target is exactly ``base+$95`` and the body there matches
+    the family signature.  This never fires for the other bodies (whose play
+    target is elsewhere), so the existing generations are unaffected.
+    """
+    if play != (base + constants.DMC_PLAY_95_REL) & 0xFFFF:
+        return False
+    return _n95_body_ok(mem, base)
+
+
+def _norm_n95_body(mem, base: int) -> Optional[bytes]:
+    """The ``$95`` play body ($95..$718) with per-tune bytes zeroed, or ``None``.
+
+    Zeroes the operand of every 3-byte instruction whose target lies in the
+    per-tune data region (``>= base+$858``, past the fixed note-freq tables and
+    work RAM) plus the self-modified tempo-reload seed at ``$10bf`` (init
+    overwrites it from the subtune record, so its source value never matters),
+    leaving only the load-invariant engine opcodes.  Walking with :data:`_OP_LEN`
+    keeps the operand positions aligned; a non-family body normalises differently
+    and fails the hash.
+    """
+    hi = base + constants.N95_BODY_HI
+    if hi > len(mem):
+        return None
+    out = bytearray(mem[base + constants.N95_BODY_LO : hi])
+    pc = constants.N95_BODY_LO
+    while pc < constants.N95_BODY_HI:
+        op = mem[base + pc]
+        length = _OP_LEN[op]
+        if pc + length > constants.N95_BODY_HI:  # instr straddles the body end:
+            return None  # walk desynced from the canonical layout -- not a match
+        if length == 3:
+            operand = mem[base + pc + 1] | (mem[base + pc + 2] << 8)
+            if ((operand - base) & 0xFFFF) >= constants.N95_DATA_REL:
+                out[pc - constants.N95_BODY_LO + 1] = 0
+                out[pc - constants.N95_BODY_LO + 2] = 0
+        pc += length
+    out[constants.N95_RELOAD_SEED_REL - constants.N95_BODY_LO] = 0
+    return bytes(out)
+
+
+def _n95_body_ok(mem, base: int) -> bool:
+    """True if ``base+$95`` carries the modelled ``$95`` engine body signature."""
+    body = _norm_n95_body(mem, base)
+    if body is None:
+        return False
+    return hashlib.sha256(body).hexdigest() == constants.N95_BODY_SHA256
+
+
+def n95_order_table_base(mem, base: int) -> Optional[int]:
+    """Return the ``$95`` per-subtune orderlist pointer-table base, or ``None``.
+
+    Read from the init copy ``LDA <ordertable>,Y : STA $17d9,X`` (the store
+    ``9D`` to ``base+$17d9``, low byte of the per-voice orderlist-ptr array),
+    which locates it whatever the init layout."""
+    store_addr = (base + constants.N95_ORDER_STORE_REL - 0x1000) & 0xFFFF
+    sig = bytes((0x9D, store_addr & 0xFF, store_addr >> 8))
+    idx = mem.find(sig, base, min(len(mem), base + 0x2000))
+    if idx >= 3 and mem[idx - 3] == 0xB9:
+        return mem[idx - 2] | (mem[idx - 1] << 8)
+    return None
 
 
 def order_table_base(mem, base: int) -> Optional[int]:
@@ -120,6 +190,8 @@ def dmc_variant(mem, base: int) -> Optional[str]:
     """
     if _a1_body_ok(mem, base):
         return "a1"
+    if _n95_body_ok(mem, base):
+        return "n95"
     idx = base + constants.DMC_MARKER_OP_REL
     if idx >= len(mem):
         return None
@@ -353,6 +425,21 @@ def _a1_byte_exact(mem, base: int, play, init) -> bool:
     return a1_order_table_base(mem, base) is not None
 
 
+def _n95_byte_exact(mem, base: int, play, init) -> bool:
+    """Whether the ``$95`` body at ``base`` is reproduced byte-exact.
+
+    Gated out (recognised but not byte-exact) when the header init/play vectors
+    resolve outside the resident player -- a self-modifying subtune selector or a
+    multispeed divider wrapper -- or when the orderlist-table anchor is missing.
+    """
+    win = constants.N95_DISPATCH_WINDOW
+    if play is not None and not base <= play < base + win:
+        return False
+    if init is not None and not base <= init < base + win:
+        return False
+    return n95_order_table_base(mem, base) is not None
+
+
 def dmc_byte_exact(
     mem, base: int, play: Optional[int] = None, init: Optional[int] = None
 ) -> bool:
@@ -375,6 +462,8 @@ def dmc_byte_exact(
         return False
     if variant == "a1":
         return _a1_byte_exact(mem, base, play, init)
+    if variant == "n95":
+        return _n95_byte_exact(mem, base, play, init)
     if release_clears_adsr(mem, base) is None:  # an unrecognised release edit
         return False
     if variant == "v37":

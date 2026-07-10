@@ -177,3 +177,51 @@ ARP_NOTE_OP = 0x5B9  # LDA $17CA,Y @ $15B8  (wavetable note)
 FILT_CTRL_OP = 0x296  # LDA $17CE,Y @ $1295  (filter presets)
 FILT_STEP_LO_OP = 0x3E7  # LDA $17D2,Y @ $13E6  (filter sweep step lo)
 FILT_STEP_HI_OP = 0x3ED  # LDA $17D8,Y @ $13EC  (filter sweep step hi)
+
+# --- $95 engine (compact, self-modifying player body) ----------------------
+# A distinct earlier-lineage DMC generation whose play body sits at ``base+$95``
+# (the dispatch play-JMP target).  A single global tempo divider ($1016) chooses,
+# per frame, between a row-advance pass ($10e1) and a steady tick ($1373) for all
+# three voices; the SID voice stride is read from the preset table ``$100c,X`` =
+# {0,7,14}.  The filter cutoff-hi is composed once per frame as a global
+# accumulator plus a per-tune base offset (``$d416 = $1019 + $1853``).  Recognised
+# + reproduced byte-exact by ``Player95``; gated wholly separately from the
+# ``$85``/``$a1`` bodies so those engines are unchanged.
+DMC_PLAY_95_REL = 0x95  # play-body offset from base for the $95 engine
+
+# Play-body operand offsets (rel to base): per-tune table bases, read from the
+# ``LDA <table>,Y`` operands.  The note-freq tables sit at a FIXED rel offset
+# (right after the code, ahead of the work RAM), so they are base-relative
+# constants, not read operands.
+N95_ORDER_OP = 0x47  # LDA <ordertable>,Y @ $1046 (per-subtune 8-byte records)
+N95_PATTERN_LO_OP = 0x147  # LDA <patptr_lo>,Y @ $1146
+N95_PATTERN_HI_OP = 0x14C  # LDA <patptr_hi>,Y @ $114b
+N95_INST_OP = 0x339  # LDA <instruments>,Y @ $1338 (8-byte records)
+N95_WT_CTRL_OP = 0x658  # LDA <wavetable ctrl>,Y @ $1657
+N95_WT_ARG_OP = 0x65F  # LDA <wavetable arg>,Y @ $165e
+N95_PW_A_OP = 0x4D0  # LDA <pw hi/step>,Y @ $14cf
+N95_PW_B_OP = 0x4C6  # LDA <pw lo/step>,Y @ $14c5
+N95_FILT_A_OP = 0x496  # LDA <filter hi/step>,Y @ $1495
+N95_FILT_B_OP = 0x4A7  # LDA <filter lo/step>,Y @ $14a6
+N95_FREQ_LO_REL = 0x719  # note->freq lo table (fixed: right after the code)
+N95_FREQ_HI_REL = 0x779  # note->freq hi table (fixed)
+N95_ORDER_STORE_REL = 0x17D9  # init copies orderlist ptr lo to $17d9,X
+
+# Body signature: sha256 of the play body ($95..$718) with the per-tune table
+# operands (any 3-byte instruction operand ``>= base+$858``, the per-tune data
+# region past the fixed freq tables + work RAM) zeroed, plus the self-modified
+# tempo-reload seed byte at ``$10bf`` (init overwrites it from the subtune record,
+# so its source value is irrelevant) wildcarded.  513 family tunes share this
+# normalised body; it rejects the reorganised $95 sub-versions (groove counter,
+# relocated filter cell, different zero-page pointers) which are not modelled.
+N95_BODY_LO = 0x95
+N95_BODY_HI = 0x719
+N95_DATA_REL = 0x858  # per-tune data starts here; operands >= this are wildcarded
+N95_RELOAD_SEED_REL = 0xBF  # self-modified $1016 tempo-reload immediate (wildcard)
+N95_BODY_SHA256 = "43f32e5705a76585f41e1ad001db15a2c4b244a72a77d92a4900008fceb3de4c"
+
+# The header init/play vectors must resolve into the resident player (within this
+# window of the base) for byte-exact playback; builds wrapped by a self-modifying
+# subtune selector or a multispeed divider (play/init far outside) are recognised
+# but gated out.
+N95_DISPATCH_WINDOW = 0x20
