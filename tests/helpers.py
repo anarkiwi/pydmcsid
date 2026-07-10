@@ -94,6 +94,21 @@ TUNES = {
         "MUSICIANS/P/Psych858o/Cup_of_Coffee_and_Few_Cigs.sid",
         "Cup_of_Coffee_and_Few_Cigs.grid.txt",
     ),
+    # Benign play-wrapper builds: the header play vector is not base+3 but a thin
+    # stub that statically follows to the standard play entry, so the resident body
+    # is reproduced byte-exact (see reader._play_wrapper_benign).  Krupa_Mix is a
+    # transparent CIA-multispeed divider (DEC counter; BOTH branches JMP $1003);
+    # Sharkz is a subtune-selector thunk whose init self-modifies the play-JMP high
+    # byte back to $10 (stable $1003); Axel_F reprograms the CIA then JMPs the
+    # relocated play entry (base=$7000); Sun_in_My_Eyes is an $a1 build whose init
+    # (not play) resolves into a wrapper selector.
+    "krupa_mix": ("DEMOS/G-L/Krupa_Mix.sid", "Krupa_Mix.grid.txt"),
+    "sharkz": ("MUSICIANS/B/Bayliss_Richard/Sharkz.sid", "Sharkz.grid.txt"),
+    "axel_f": ("MUSICIANS/P/PVCF/Axel_F.sid", "Axel_F.grid.txt"),
+    "sun_eyes": (
+        "MUSICIANS/B/Bayliss_Richard/Sun_in_My_Eyes.sid",
+        "Sun_in_My_Eyes.grid.txt",
+    ),
 }
 
 

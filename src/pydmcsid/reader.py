@@ -329,6 +329,265 @@ _OP_LEN = bytes.fromhex(
 )
 
 
+# Conditional-branch opcodes (2-byte, PC-relative) a benign wrapper may use.
+_WRAP_BRANCH = frozenset((0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0))
+# Side-effect-free opcodes a benign wrapper may carry (immediate loads, register
+# transfers, in-register arithmetic/shift, compares, flag ops) -- none touch memory
+# or divert control, so they cannot change what the player observes per frame.
+_WRAP_INERT = frozenset(
+    (
+        0xA9,
+        0xA2,
+        0xA0,
+        0xAD,
+        0xAE,
+        0xAC,
+        0xA5,
+        0xA6,
+        0xA4,
+        0xBD,
+        0xB9,
+        0xBC,
+        0xBE,
+        0xB5,
+        0xB4,
+        0xB6,
+        0xAA,
+        0xA8,
+        0x8A,
+        0x98,
+        0xE8,
+        0xC8,
+        0xCA,
+        0x88,
+        0x4A,
+        0x0A,
+        0x6A,
+        0x2A,
+        0x18,
+        0x38,
+        0xEA,
+        0xC9,
+        0xE0,
+        0xC0,
+        0x29,
+        0x09,
+        0x49,
+        0x69,
+        0xE9,
+    )
+)
+# Store / read-modify-write opcodes, split by operand width (abs = 3-byte, zp =
+# 2-byte).  A benign wrapper may store to its OWN counter cell (a multispeed
+# divider), but never to a SID register or to a followed JMP's operand bytes.
+_WRAP_STORE_ABS = frozenset(
+    (0x8D, 0x8E, 0x8C, 0xCE, 0xDE, 0xEE, 0xFE, 0x0E, 0x4E, 0x2E, 0x6E)
+)
+_WRAP_STORE_ZP = frozenset(
+    (
+        0x85,
+        0x95,
+        0x86,
+        0x96,
+        0x84,
+        0x94,
+        0xC6,
+        0xD6,
+        0xE6,
+        0xF6,
+        0x06,
+        0x16,
+        0x46,
+        0x56,
+        0x26,
+        0x36,
+        0x66,
+        0x76,
+    )
+)
+
+
+def _wrap_read(mem, overlay: dict, addr: int) -> Optional[int]:
+    """Byte at ``addr`` after applying ``overlay`` (init's self-patches), or None."""
+    addr &= 0xFFFF
+    if addr in overlay:
+        return overlay[addr]
+    return mem[addr] if addr < len(mem) else None
+
+
+def _sim_init_patches(mem, base: int, init: Optional[int], subtune: int) -> dict:
+    """Bytes the init routine writes into the wrapper before playback begins.
+
+    The subtune-selector wrappers self-modify the play-JMP operand from init (a
+    ``TAX : LDA table,X : STA <play+2>`` patch keyed on the selected subtune), so
+    the header play-JMP's STATIC operand is not what runs.  Model init as a small
+    straight-line interpreter (following JMPs, tracking ``A``/``X``/``Y`` and known
+    stores) to recover the STABLE patched bytes for the followed subtune; every
+    read is bounds-guarded and unknown values are simply not recorded, so the
+    follower stays conservative (an unresolved patch leaves the JMP target unknown
+    and the tune deferred).  Stops on ``JSR``/``RTS``/``BRK`` or when control
+    reaches the resident player.
+    """
+    patches: dict = {}
+    if init is None:
+        return patches
+    acc, xreg, yreg = subtune & 0xFF, 0, 0
+    pc = init & 0xFFFF
+    for _ in range(constants.WRAP_INIT_BUDGET):
+        if pc + 2 >= len(mem):
+            break
+        op = mem[pc]
+        if op == 0x4C:  # JMP abs
+            tgt = mem[pc + 1] | (mem[pc + 2] << 8)
+            if ((tgt - base) & 0xFFFF) < 0x900 or tgt == pc:  # into resident / self
+                break
+            pc = tgt
+            continue
+        if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- stop
+            break
+        length = _OP_LEN[op]
+        acc, xreg, yreg = _sim_init_step(mem, patches, op, pc, acc, xreg, yreg)
+        pc = (pc + length) & 0xFFFF
+    return patches
+
+
+def _sim_init_step(mem, patches, op, pc, acc, xreg, yreg):
+    """One init instruction: update ``(A, X, Y)`` and record known stores."""
+    # pylint: disable=too-many-branches,too-many-return-statements
+    val = mem[pc + 1] if pc + 1 < len(mem) else 0
+    abs_addr = (mem[pc + 1] | (mem[pc + 2] << 8)) & 0xFFFF if pc + 2 < len(mem) else 0
+    if op == 0xA9:
+        return val, xreg, yreg
+    if op == 0xA2:
+        return acc, val, yreg
+    if op == 0xA0:
+        return acc, xreg, val
+    if op == 0xAA:
+        return acc, acc, yreg
+    if op == 0xA8:
+        return acc, xreg, acc
+    if op == 0x8A:
+        return xreg, xreg, yreg
+    if op == 0x98:
+        return yreg, xreg, yreg
+    if op == 0xAD:
+        return _wrap_read(mem, patches, abs_addr), xreg, yreg
+    if op == 0xA5:
+        return _wrap_read(mem, patches, val), xreg, yreg
+    if op == 0xBD:  # LDA abs,X
+        return (
+            None if xreg is None else _wrap_read(mem, patches, abs_addr + xreg),
+            xreg,
+            yreg,
+        )
+    if op == 0xB9:  # LDA abs,Y
+        return (
+            None if yreg is None else _wrap_read(mem, patches, abs_addr + yreg),
+            xreg,
+            yreg,
+        )
+    if op in (0x8D, 0x8E, 0x8C):  # STA/STX/STY abs
+        src = acc if op == 0x8D else (xreg if op == 0x8E else yreg)
+        if src is not None:
+            patches[abs_addr] = src & 0xFF
+        else:
+            patches.pop(abs_addr, None)
+    elif op in (0x85, 0x86, 0x84):  # STA/STX/STY zp
+        src = acc if op == 0x85 else (xreg if op == 0x86 else yreg)
+        if src is not None:
+            patches[val] = src & 0xFF
+        else:
+            patches.pop(val, None)
+    return acc, xreg, yreg
+
+
+def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
+    """True if EVERY path through the wrapper at ``play`` tail-JMPs to base+3.
+
+    A register-free control-flow walk (both sides of each conditional branch are
+    explored, bounded by :data:`constants.WRAP_FOLLOW_BUDGET`).  A path is benign
+    only if it reaches a ``JMP`` whose operand (after init's ``overlay`` patches)
+    is exactly the standard play entry ``base+3``.  It is rejected -- the wrapper
+    genuinely alters per-frame behaviour -- on any ``JSR`` (the body would run more
+    than once), any store to a SID register, any unmodelled opcode, or a ``JMP``
+    that resolves elsewhere.  A store that lands on a followed ``JMP``'s operand
+    bytes (a per-call self-modifying selector) is rejected too: its runtime target
+    is not the static one.  Counter self-modification (a divider rewriting its own
+    ``LDX`` immediate) is allowed -- it never touches a JMP operand, and every
+    branch still lands on a ``base+3`` JMP.
+    """
+    entry = (base + constants.STD_PLAY_REL) & 0xFFFF
+    stack = [play & 0xFFFF]
+    visited: set = set()
+    stores: set = set()
+    jmp_operands: set = set()
+    reached = False
+    budget = constants.WRAP_FOLLOW_BUDGET
+    while stack:
+        pcx = stack.pop()
+        while True:
+            budget -= 1
+            if budget <= 0 or pcx + 2 >= len(mem):
+                return False
+            if pcx in visited:
+                break
+            visited.add(pcx)
+            op = mem[pcx]
+            length = _OP_LEN[op]
+            if pcx + length > len(mem):
+                return False
+            if op == 0x4C:  # JMP abs -- a tail (or an in-wrapper hop)
+                jmp_operands.add((pcx + 1) & 0xFFFF)
+                jmp_operands.add((pcx + 2) & 0xFFFF)
+                lo = _wrap_read(mem, overlay, pcx + 1)
+                hi = _wrap_read(mem, overlay, pcx + 2)
+                if lo is None or hi is None:
+                    return False
+                tgt = (lo | (hi << 8)) & 0xFFFF
+                if tgt == entry:
+                    reached = True
+                    break
+                if ((tgt - play) & 0xFFFF) < 0x100 or ((play - tgt) & 0xFFFF) < 0x100:
+                    pcx = tgt  # a short hop that stays inside the wrapper -- follow
+                    continue
+                return False
+            if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- not benign
+                return False
+            if op in _WRAP_BRANCH:
+                rel = mem[pcx + 1]
+                dest = (pcx + 2 + (rel - 256 if rel >= 0x80 else rel)) & 0xFFFF
+                stack.append(dest)
+                pcx = (pcx + 2) & 0xFFFF
+                continue
+            if op in _WRAP_STORE_ABS:
+                tgt = (mem[pcx + 1] | (mem[pcx + 2] << 8)) & 0xFFFF
+                if 0xD400 <= tgt <= 0xD41F:  # a SID write -- alters the frame
+                    return False
+                stores.add(tgt)
+            elif op in _WRAP_STORE_ZP:
+                stores.add(mem[pcx + 1] & 0xFFFF)
+            elif op not in _WRAP_INERT:
+                return False  # an unmodelled opcode -- not provably benign
+            pcx = (pcx + length) & 0xFFFF
+    if stores & jmp_operands:  # a per-call self-modifying JMP target
+        return False
+    return reached
+
+
+def _play_wrapper_benign(
+    mem, base: int, play: Optional[int], init: Optional[int]
+) -> bool:
+    """True if ``play`` is base+3 or a benign wrapper that follows to base+3.
+
+    ``play`` is the header play vector; ``None`` (a bare PRG) is the unwrapped
+    standard entry.  See :func:`_wrapper_reaches_play`.
+    """
+    if play is None or (play & 0xFFFF) == (base + constants.STD_PLAY_REL) & 0xFFFF:
+        return True
+    overlay = _sim_init_patches(mem, base, init, 0)
+    return _wrapper_reaches_play(mem, base, play, overlay)
+
+
 def _helper_zeros_adsr(mem, addr: int) -> bool:
     """True if the tiny release helper at ``addr`` stores to BOTH ``$D405,Y`` and
     ``$D406,Y`` (``99 05/06 D4``) before its first ``RTS`` -- i.e. zeroes AD/SR.
@@ -464,12 +723,15 @@ def _a1_byte_exact(mem, base: int, play, init) -> bool:
 
     Gated out (recognised but not byte-exact) when the header init/play vectors
     resolve outside the resident player (a self-modifying subtune selector or a
-    multispeed divider wrapper), when a patchable release store carries an
-    unmodelled opcode, or when the orderlist-table anchor is missing."""
+    multispeed divider wrapper) AND that wrapper is not a benign pass-through to the
+    standard play entry (:func:`_play_wrapper_benign`), when a patchable release
+    store carries an unmodelled opcode, or when the orderlist-table anchor is
+    missing."""
     win = constants.A1_DISPATCH_WINDOW
-    if play is not None and not base <= play < base + win:
-        return False
-    if init is not None and not base <= init < base + win:
+    resident = (play is None or base <= (play & 0xFFFF) < base + win) and (
+        init is None or base <= (init & 0xFFFF) < base + win
+    )
+    if not resident and not _play_wrapper_benign(mem, base, play, init):
         return False
     if mem[base + constants.A1_REL_SR_CLEAR_REL] not in (0x99, 0x2C):
         return False
@@ -565,15 +827,19 @@ def dmc_byte_exact(
 
     True for the init-``$37`` generation, the modelled init-``$1d`` bodies and the
     reorganised ``$a1`` engine; False for a recognised DMC of an unmodelled
-    generation.  A handful of hand-customized init-``$1d`` builds share the
-    marker+layout but wrap the play entry (``play != base+3``) or relocate the
-    AD/SR write out of the modelled ``$184B`` helper -- these are recognised as
-    ``$1d`` but not reproduced byte-exact, so they are gated out here (``play`` is
-    the header play vector; ``None`` skips the wrapper check, e.g. for a bare PRG
-    with no header).  An init-``$37`` build whose release is patched to an
-    unrecognised routine is likewise recognised but not byte-exact.  A ``$a1``
-    build wrapped by a subtune selector / multispeed divider (``init``/``play``
-    resolve outside the player) is gated out too.
+    generation.  When an init-``$1d`` build wraps the play entry (``play != base+3``)
+    the wrapper is FOLLOWED (:func:`_play_wrapper_benign`): a benign pass-through
+    (a pure relocator/thunk, or a transparent multispeed divider whose every branch
+    re-enters the standard play body) is admitted, since the resident body is
+    reproduced byte-exact; a genuine wrapper that writes SID registers, runs the
+    body more than once, or self-modifies its own play-JMP target is gated out.  A
+    build that instead relocates the AD/SR write out of the modelled ``$184B``
+    helper is gated out by the final operand check (``play``/``init`` are the header
+    vectors; ``None`` is the unwrapped standard entry, e.g. a bare PRG).  An
+    init-``$37`` build whose release is patched to an unrecognised routine is
+    likewise recognised but not byte-exact.  A ``$a1`` build wrapped by a subtune
+    selector / multispeed divider is admitted only when the wrapper follows to the
+    standard play entry, else gated out.
     """
     variant = dmc_variant(mem, base)
     if variant is None:
@@ -588,7 +854,7 @@ def dmc_byte_exact(
         return False
     if variant == "v37":
         return True
-    if play is not None and play != (base + constants.STD_PLAY_REL) & 0xFFFF:
+    if not _play_wrapper_benign(mem, base, play, init):
         return False
     return (
         _operand(mem, base, constants.INST_ADSR_SUB_OP)
@@ -623,9 +889,11 @@ class Song:
     def byte_exact(self) -> bool:
         """Whether pydmcsid's player reproduces this body byte-exact.
 
-        True for the init-``$37`` generation and the modelled init-``$1d`` bodies;
-        False for an unmodelled generation or a hand-customized ``$1d`` build that
-        wraps the play entry / relocates the AD/SR helper.  See
+        True for the init-``$37`` generation and the modelled init-``$1d`` bodies,
+        including builds behind a benign play-wrapper (a thin relocator/thunk or a
+        transparent multispeed divider that follows to the standard play entry);
+        False for an unmodelled generation, a genuine wrapper that alters per-frame
+        behaviour, or a ``$1d`` build that relocates the AD/SR helper.  See
         :func:`dmc_byte_exact`.
         """
         return dmc_byte_exact(self.mem, self.base, self.play, self.init)

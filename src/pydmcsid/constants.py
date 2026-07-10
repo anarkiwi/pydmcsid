@@ -169,6 +169,17 @@ A1_BODY_SHA256 = "fad9e7f9195f89dfce507681a9ee54fbec44507d5295e8e2e2d89983467091
 A1_DISPATCH_WINDOW = 0x20
 
 STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
+
+# --- benign play-wrapper follower -------------------------------------------
+# A handful of builds append a thin play stub ahead of the resident dispatch: the
+# header play vector is not base+3 but a short wrapper that statically reduces to a
+# single JMP into the standard play entry -- a pure relocator/thunk, or a
+# transparent multispeed divider whose every branch re-enters the SAME play body.
+# These reproduce byte-exact (the resident body is unchanged; the player renders it
+# from the base regardless of the header vector), so following the wrapper admits
+# them.  Bounds on the static follow (crash-safe; every read is guarded):
+WRAP_FOLLOW_BUDGET = 256  # max instructions decoded across all explored paths
+WRAP_INIT_BUDGET = 64  # max instructions decoded simulating init's self-patches
 INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
 INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)
 PW_TABLE_OP = 0x358  # LDA $17B3,Y @ $1357  (PW-sweep nibble table)

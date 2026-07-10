@@ -655,6 +655,120 @@ def test_pw_min_shift_stock_and_patched():
     assert pw_min_shift(patched.mem, patched.base) == 2
 
 
+def _wrapped_body(base, stub, init_rel=0x1D, marker=0x7E):
+    """A byte-exact $1d body with ``stub`` bytes appended at ``base+0x900``.
+
+    Returns ``(mem, play, init)`` where ``play``/``init`` address the appended stub
+    ($base+0x900), so :func:`dmc_byte_exact` follows the wrapper.  ``stub`` is raw
+    6502 for the play wrapper; init is a bare ``JMP base`` (resident) by default.
+    """
+    body = bytearray(_dmc_body(base, init_rel=init_rel, marker=marker))
+    body += b"\x00" * (0x0940 - len(body))
+    play = (base + 0x900) & 0xFFFF
+    body[0x900 : 0x900 + len(stub)] = stub
+    mem = bytearray(0x10000)
+    mem[base : base + len(body)] = body
+    mem[base + 0x930 : base + 0x933] = bytes([0x4C, base & 0xFF, base >> 8])  # JMP init
+    return mem, play, (base + 0x930) & 0xFFFF
+
+
+def test_wrapper_pure_thunk_admitted():
+    """A play vector that is a bare ``JMP base+3`` is a benign pass-through."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    b3 = 0x1003
+    mem, play, init = _wrapped_body(0x1000, bytes([0x4C, b3 & 0xFF, b3 >> 8]))
+    assert play != 0x1003
+    assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_wrapper_transparent_divider_admitted():
+    """A multispeed divider whose BOTH branches JMP base+3 is transparent -> admit.
+
+    ``DEC ctr : LDX #0 : BNE skip : LDX #N : STX ctr : JMP $1003 ; skip: JMP $1003``
+    -- the counter self-modification never touches a JMP operand and every path
+    re-enters the same play body, so it reproduces byte-exact.
+    """
+    from pydmcsid.reader import dmc_byte_exact
+
+    ctr = 0x1930
+    stub = bytes(
+        [0xCE, ctr & 0xFF, ctr >> 8, 0xA2, 0x00, 0xD0, 0x08, 0xA2, 0x04]
+        + [0x8E, ctr & 0xFF, ctr >> 8, 0x4C, 0x03, 0x10, 0x4C, 0x03, 0x10]
+    )
+    mem, play, init = _wrapped_body(0x1000, stub)
+    assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_wrapper_register_writing_stub_deferred():
+    """A stub that writes a SID register before playing alters the frame -> defer."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    stub = bytes([0xA9, 0x0F, 0x8D, 0x18, 0xD4, 0x4C, 0x03, 0x10])  # STA $D418; JMP
+    mem, play, init = _wrapped_body(0x1000, stub)
+    assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_wrapper_multispeed_jsr_deferred():
+    """A stub that ``JSR``s the body (runs it more than once) is not byte-exact."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    stub = bytes([0x20, 0x03, 0x10, 0x4C, 0x03, 0x10])  # JSR $1003 : JMP $1003 (2x)
+    mem, play, init = _wrapped_body(0x1000, stub)
+    assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_wrapper_self_modifying_jmp_deferred():
+    """A stub that patches its own play-JMP operand per call is deferred.
+
+    ``LDA tbl,X : STA <jmp+1> : JMP $1003`` -- the runtime target is not the static
+    ``$1003`` (the selector cycles it), so it is not provably a pass-through.
+    """
+    from pydmcsid.reader import dmc_byte_exact
+
+    jmp_lo = (0x1000 + 0x900 + 6 + 1) & 0xFFFF  # operand-low of the trailing JMP
+    stub = bytes([0xBD, 0x00, 0x1A, 0x8D, jmp_lo & 0xFF, jmp_lo >> 8, 0x4C, 0x03, 0x10])
+    mem, play, init = _wrapped_body(0x1000, stub)
+    assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_wrapper_init_patches_jmp_to_base3_admitted():
+    """When init self-modifies the play-JMP operand to base+3, follow it -> admit.
+
+    The subtune-selector shape: init does ``LDA #$10 : STA <jmp+2>`` fixing the
+    play-JMP high byte to $10 (a stable ``$1003``); the follower models init's
+    patch and admits the tune, while a patch to a DIFFERENT page is deferred.
+    """
+    from pydmcsid.reader import dmc_byte_exact
+
+    base = 0x1000
+    jmp_hi = (base + 0x900 + 2) & 0xFFFF  # the trailing JMP's operand-high byte
+    stub = bytes([0x4C, 0x03, 0x00])  # JMP $0003 -- WRONG until init patches hi=$10
+    mem, play, _ = _wrapped_body(base, stub)
+    init = (base + 0x930) & 0xFFFF
+    mem[init : init + 8] = bytes(  # LDA #$10 : STA jmp_hi : JMP base (resident)
+        [0xA9, 0x10, 0x8D, jmp_hi & 0xFF, jmp_hi >> 8, 0x4C, base & 0xFF, base >> 8]
+    )
+    assert dmc_byte_exact(mem, base, play=play, init=init)
+    # A patch to a different page (the genuine relocating selector) stays deferred.
+    mem[init + 1] = 0x20  # STA hi = $20 -> JMP $2003
+    assert not dmc_byte_exact(mem, base, play=play, init=init)
+
+
+def test_wrapper_bounds_safe_never_raises():
+    """A play vector at the top of memory is deferred, never an IndexError."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    mem, _play, init = _wrapped_body(0x1000, bytes([0x4C, 0x03, 0x10]))
+    assert dmc_byte_exact(mem, 0x1000, play=0xFFFE, init=init) is False
+    # A stub that runs off the end of the image (no terminating JMP) is deferred.
+    mem2, play2, init2 = _wrapped_body(0x1000, bytes([0xEA] * 4))  # NOPs, no JMP
+    trunc = bytes(mem2[0x1000 : 0x1000 + 0x904])
+    tmem = bytearray(0x10000)
+    tmem[0x1000 : 0x1000 + len(trunc)] = trunc
+    assert dmc_byte_exact(tmem, 0x1000, play=play2, init=init2) is False
+
+
 def test_errors_subclass_pysidtracker():
     """The pydmcsid error hierarchy re-parents onto ``pysidtracker.SidError``."""
     assert issubclass(DmcError, pysidtracker.SidError)
