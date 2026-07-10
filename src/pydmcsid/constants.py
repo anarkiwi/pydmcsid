@@ -9,8 +9,21 @@ operands, not hardcoded).  Transcribed from the DMC disassembly
 (``disasm.asm`` $1000..$1830 / decompile.c).
 """
 
-SID_REGISTERS = 25
-PAL_CYCLES_PER_FRAME = 19656  # 312 rasterlines * 63 cycles (PAL VBI period)
+# Hardware constants live in pysidtracker; re-export them for back-compat so
+# existing ``pydmcsid.constants.<NAME>`` callers keep working.
+from pysidtracker.registers import (  # pylint: disable=unused-import
+    NTSC_CLOCK_HZ,
+    NTSC_CYCLES_PER_FRAME,
+    PAL_CLOCK_HZ,
+    PAL_CYCLES_PER_FRAME,
+    PW_HI_REGS,
+    SID_BASE,
+    SID_REG_COUNT,
+    SID_VOICE_OFFSET,
+)
+
+# Back-compat alias: the DMC reader/tests call the 25-register file ``SID_REGISTERS``.
+SID_REGISTERS = SID_REG_COUNT
 
 # DMC JMP-table signature at load ($1000): JMP init / play / stop / FUN_163E.
 # The canonical exact 12 bytes for the $1000 / init-$1037 build.  Recognition is

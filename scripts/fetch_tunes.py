@@ -22,27 +22,24 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-# Download attempts before a tune is declared unreachable (override via env).
-RETRIES = int(os.environ.get("FETCH_RETRIES", "3"))
+from pysidtracker.testing import (
+    DEFAULT_MIRROR,
+    TuneFetchError,
+    fetch_tune,
+    resolve_tune,
+)
 
-
-class FetchError(RuntimeError):
-    """A tune could not be fetched (mirror unreachable or the tune not found)."""
-
+# Back-compat name: the corpus tests catch ``fetch_tunes.FetchError``.
+FetchError = TuneFetchError
 
 REPO = Path(__file__).resolve().parent.parent
 CACHE = Path(os.environ.get("DMC_TUNECACHE", str(REPO / "tests" / ".tunecache")))
 
-# Public HVSC mirror.  Override with ``$HVSC_MIRROR``; the relative HVSC path
-# is appended verbatim.
-MIRROR = os.environ.get("HVSC_MIRROR", "https://hvsc.brona.dk/HVSC/C64Music").rstrip(
-    "/"
-)
+# Public HVSC mirror (override with ``$HVSC_MIRROR``, honoured by the shared
+# fetcher).
+MIRROR = DEFAULT_MIRROR
 
 # id -> HVSC relative path (the DMC byte-exact validation references).
 TUNES = {
@@ -58,58 +55,20 @@ TUNES = {
 }
 
 
-def _is_sid(data: bytes) -> bool:
-    return data[:4] in (b"PSID", b"RSID")
-
-
-def _download(relpath: str) -> bytes:
-    """Download ``relpath`` from the mirror, retrying transient failures.
-
-    Raises :class:`FetchError` on a genuine 404 (tune not on the mirror) or when
-    the mirror stays unreachable after :data:`RETRIES` attempts.
-    """
-    url = f"{MIRROR}/{relpath}"
-    req = urllib.request.Request(url, headers={"User-Agent": "pydmcsid/fetch_tunes"})
-    last_err = None
-    for attempt in range(RETRIES):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 (https)
-                return resp.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise FetchError("%s: not found on mirror" % relpath) from exc
-            last_err = exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last_err = exc
-        if attempt + 1 < RETRIES:
-            time.sleep(min(2**attempt, 5))
-    raise FetchError(
-        "%s: mirror unreachable after %d attempts (%s)" % (relpath, RETRIES, last_err)
-    )
-
-
 def fetch(relpath: str, *, force: bool = False) -> Path:
-    """Fetch ``relpath`` from the HVSC mirror into the cache; return its path.
+    """Resolve ``relpath`` to a cached ``.sid`` path via the shared fetcher.
 
-    Honours a local HVSC tree via ``$HVSC`` (copied into the cache) before
-    hitting the network, so a developer with a local mirror needs no download.
-    Raises :class:`FetchError` when the tune is genuinely unreachable (so callers
-    can skip only that tune, not the whole suite).
+    Honours a local HVSC tree (``$HVSC``) first, then the gitignored cache, then
+    downloads from the mirror. Raises :class:`FetchError` when the tune is
+    genuinely unreachable (so callers can skip only that tune, not the whole
+    suite). ``force`` re-downloads even when cached.
     """
     relpath = relpath.lstrip("/")
-    dest = CACHE / relpath
-    if dest.exists() and not force:
-        return dest
-    local = os.environ.get("HVSC")
-    if local and (Path(local) / relpath).exists():
-        data = (Path(local) / relpath).read_bytes()
-    else:
-        data = _download(relpath)
-    if not _is_sid(data):
-        raise FetchError("%s: not a SID file (magic %r)" % (relpath, data[:4]))
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
-    return dest
+    if not force:
+        path = resolve_tune(relpath, cache_dir=CACHE)
+        if path is not None:
+            return path
+    return fetch_tune(relpath, cache_dir=CACHE, mirror=MIRROR, force=force)
 
 
 def main(argv=None) -> int:

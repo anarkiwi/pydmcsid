@@ -4,26 +4,20 @@ A register log is the player's output flattened to timed chip writes: one
 :class:`RegWrite` per SID register write, with an absolute clock in C64 CPU
 cycles.  The DMC player emits one tight write burst per VBI play call; successive
 calls are one VBI period (``cycles_per_frame``) apart, and within a call the
-writes are spaced ``write_spacing`` cycles -- the same shape the other py* libs
-(pymusicassembler / pygoattracker) expose, so deplayroutine's cross-check harness
-can frame and byte-compare them.
+writes are spaced ``write_spacing`` cycles.  ``RegWrite`` and the per-frame
+framing loop are the shared :mod:`pysidtracker.reglog` surface; this module keeps
+only the thin DMC-specific ``iter_register_writes`` wrapper.
 """
 
-from typing import Iterator, NamedTuple
+from typing import Iterator
+
+from pysidtracker.reglog import DEFAULT_WRITE_SPACING, RegWrite, frame_writes
 
 from pydmcsid import constants
 from pydmcsid.player import iter_frames
 from pydmcsid.reader import Song
 
-DEFAULT_WRITE_SPACING = 16
-
-
-class RegWrite(NamedTuple):
-    """One SID register write at an absolute CPU clock (in cycles)."""
-
-    clock: int
-    reg: int
-    val: int
+__all__ = ["RegWrite", "iter_register_writes"]
 
 
 def iter_register_writes(
@@ -35,12 +29,15 @@ def iter_register_writes(
 ) -> Iterator[RegWrite]:
     """Yield :class:`RegWrite` for ``song``, frame by frame (VBI play calls).
 
-    ``max_frames`` bounds the (looping) player; writes within a frame are
-    ``write_spacing`` cycles apart, frames ``cycles_per_frame`` apart.
+    ``max_frames`` bounds the (looping) player; :func:`iter_frames` yields one
+    per-frame ``(reg, val)`` iterable per call (reg already a ``0..24`` SID
+    offset), which the shared :func:`~pysidtracker.reglog.frame_writes` frames at
+    ``write_spacing`` within a frame and ``cycles_per_frame`` between frames.
     """
-    for frame, writes in enumerate(
-        iter_frames(song, max_frames=max_frames, subtune=subtune)
-    ):
-        clock = frame * cycles_per_frame
-        for offset, (reg, val) in enumerate(writes):
-            yield RegWrite(clock + offset * write_spacing, reg, val)
+    frames = iter_frames(song, max_frames=max_frames, subtune=subtune)
+    return frame_writes(
+        frames,
+        cycles_per_frame=cycles_per_frame,
+        write_spacing=write_spacing,
+        sid_reg_base=0,
+    )

@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    "pysidtracker>=0.2",
+    "pysidtracker>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +51,7 @@ branch = true
 source = ["pydmcsid"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 85
 show_missing = true
 
 [tool.black]
