@@ -655,6 +655,74 @@ def test_pw_min_shift_stock_and_patched():
     assert pw_min_shift(patched.mem, patched.base) == 2
 
 
+def test_v37_onset_ctrl_stock_and_patched():
+    """``v37_onset_ctrl`` reads the note-onset CTRL immediate ($11D9) from code.
+
+    The stock $37 note-fetch silences the oscillator with ``LDA #$08 : STA
+    $D404,Y`` (TEST bit); a build that patches the immediate to ``$40`` is read as
+    ``$40``; a non-``STA`` store falls back to the stock ``$08``.
+    """
+    from pydmcsid.reader import v37_onset_ctrl
+
+    m = bytearray(_dmc_body(0x1000, init_rel=0x37))
+    m[0x1D9:0x1DE] = bytes([0xA9, 0x08, 0x99, 0x04, 0xD4])  # LDA #$08 ; STA $D404,Y
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    assert v37_onset_ctrl(stock.mem, stock.base) == 0x08
+
+    m2 = bytearray(m)
+    m2[0x1DA] = 0x40  # patched immediate
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    assert v37_onset_ctrl(patched.mem, patched.base) == 0x40
+
+    m3 = bytearray(m)
+    m3[0x1DB] = 0x2C  # store is not STA $D404,Y -> stock fallback
+    other = pydmcsid.parse(b"\x00\x10" + bytes(m3))
+    assert v37_onset_ctrl(other.mem, other.base) == 0x08
+
+
+def test_v1d_note_onset_stock_and_bit_noop():
+    """``v1d_note_onset`` reads the $11DB onset-helper call ($1d generation).
+
+    The stock ``JSR $17FB`` onset writes CTRL (the ``LDA #imm`` at $11D9) and
+    ``AD=SR=$0F``; a build whose ``JSR`` is overwritten by an illegal ``BIT``
+    no-op ($2C) emits no onset SID write at all -> ``(None, None)``.
+    """
+    from pydmcsid.reader import v1d_note_onset
+
+    m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
+    m[0x1D9:0x1DE] = bytes([0xA9, 0x08, 0x20, 0xFB, 0x17])  # LDA #$08 ; JSR $17FB
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    assert v1d_note_onset(stock.mem, stock.base) == (0x08, 0x0F)
+
+    m2 = bytearray(m)
+    m2[0x1DB] = 0x2C  # JSR -> illegal BIT no-op: onset emits nothing
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    assert v1d_note_onset(patched.mem, patched.base) == (None, None)
+
+
+def test_tail_d418_force_stock_and_patched():
+    """``tail_d418_force`` reads a patched play-body tail that forces $D418.
+
+    The stock tail is ``STA $D417`` ($8D) at $10AC -> no extra $D418 write
+    (``None``); a build that redirects it to ``JSR <helper>`` where the helper is
+    ``STA $D417 ; LDA #imm ; ORA $1717 ; STA $D418`` yields ``imm``.
+    """
+    from pydmcsid.reader import tail_d418_force
+
+    m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
+    m[0xAC:0xAF] = bytes([0x8D, 0x17, 0xD4])  # stock STA $D417
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    assert tail_d418_force(stock.mem, stock.base) is None
+
+    m2 = bytearray(m)
+    m2[0xAC:0xAF] = bytes([0x20, 0x80, 0x13])  # JSR $1380 (helper in-body)
+    m2[0x380:0x38B] = bytes(
+        [0x8D, 0x17, 0xD4, 0xA9, 0x10, 0x0D, 0x17, 0x17, 0x8D, 0x18, 0xD4]
+    )
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    assert tail_d418_force(patched.mem, patched.base) == 0x10
+
+
 def _wrapped_body(base, stub, init_rel=0x1D, marker=0x7E):
     """A byte-exact $1d body with ``stub`` bytes appended at ``base+0x900``.
 

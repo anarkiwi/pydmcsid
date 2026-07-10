@@ -41,6 +41,9 @@ from pydmcsid.reader import (
     order_table_base,
     pw_min_shift,
     release_clears_adsr,
+    tail_d418_force,
+    v1d_note_onset,
+    v37_onset_ctrl,
 )
 
 
@@ -103,6 +106,16 @@ class Player:
         # ``inst[2]>>4`` chain, 2 for the ``$17`` no-op-patched build (read from
         # the code, so hand-patched builds are modelled without regressing stock).
         self._pw_min_shift = pw_min_shift(self.m, song.base)
+        # A few builds redirect the play-body tail ($10AC STA $D417) to a helper
+        # that also forces the $D418 filter-type nibble every frame; the forced
+        # immediate (OR'd with $1717) is read from the code (``None`` = stock).
+        self._tail_d418 = tail_d418_force(self.m, song.base)
+        # Note-fetch CTRL immediate ($11D9 LDA #imm ; $11DB STA $D404,Y): the
+        # init-$37 TEST-bit value ($08 stock, a per-tune code constant).  The
+        # init-$1d body overrides this in ``_setup_cells`` (its onset is a
+        # helper call that also writes AD/SR, or a ``BIT`` no-op).
+        self._onset_ctrl = v37_onset_ctrl(self.m, song.base)
+        self._onset_adsr = None
         self._setup_cells(operand)
         self.init()
 
@@ -168,6 +181,8 @@ class Player:
             self._voice(x)
         self.w(SID_FILTER_HI, m[self._a(0x171C)])
         self.w(SID_RES_FILT, m[self._a(self.g_filt)] | m[self._a(0x1723)])
+        if self._tail_d418 is not None:  # patched tail forces $D418 every frame
+            self.w(SID_MODE_VOL, self._tail_d418 | m[self._a(0x1717)])
         self.finished = all(m[self._a(0x100C) + x] == 0 for x in range(3))
         return list(self._writes)
 
@@ -308,7 +323,7 @@ class Player:
         m[self._a(0x1729) + x] = (m[self._a(0x1729) + x] + 1) & 0xFF
         m[self._a(0x173B) + x] = m[self._a(0x173E) + x]
         yv = m[self._a(0x170D) + x]
-        self.w(SID_BASE + 4 + yv, 0x08)
+        self.w(SID_BASE + 4 + yv, self._onset_ctrl)
         m[self._a(0x100F) + x] = 0xFF
         m[self._a(0x174A) + x] = 0xFF
         f8, f9 = self._curpat[x]
@@ -715,6 +730,10 @@ class PlayerV1D(Player):
         # hard-restart burst FREQ immediate ($130A: LDA #imm) -- $ff for nearly
         # all tunes, but a per-tune code constant.
         self._burst_imm = self.m[self.load + constants.BURST_IMM_REL]
+        # Note-onset SID writes ($11DB helper call): the stock ``JSR $17FB``
+        # emits CTRL then AD=SR=$0F; a ``BIT`` no-op patch emits nothing (the
+        # onset slips a frame).  Read from the code (see ``v1d_note_onset``).
+        self._onset_ctrl, self._onset_adsr = v1d_note_onset(self.m, self.load)
 
     def _rest_tail(self, x: int) -> None:
         """The shared $117D tail: $1322 steady tick or $1591 re-output per build."""
@@ -832,9 +851,10 @@ class PlayerV1D(Player):
         for off in (0x35, 0x38, 0x68, 0x6B, 0x6E, 0x98, 0x9B):
             m[self._a(0x1700 + off) + x] = 0
         yv = m[self._a(0x170D) + x]
-        self.w(SID_BASE + 4 + yv, 0x08)  # $17fb: CTRL=$08, AD=$0f, SR=$0f
-        self.w(SID_BASE + 5 + yv, 0x0F)
-        self.w(SID_BASE + 6 + yv, 0x0F)
+        if self._onset_ctrl is not None:  # $17fb: CTRL=$08, AD=$0f, SR=$0f
+            self.w(SID_BASE + 4 + yv, self._onset_ctrl)
+            self.w(SID_BASE + 5 + yv, self._onset_adsr)
+            self.w(SID_BASE + 6 + yv, self._onset_adsr)
         m[self._a(0x100F) + x] = 0xFF
         m[self._a(0x174A) + x] = 0xFF
         self._endcheck(x, f8, f9)

@@ -100,6 +100,27 @@ REST_TAIL_1591 = 0x591  # waveform re-output only
 # nearly all tunes, but a per-tune code constant a few builds hand-edited).
 BURST_IMM_REL = 0x30B
 
+# init-$1d note-onset helper call ($11DB): the note-fetch frame emits the onset
+# via ``JSR $17FB`` -- the helper stores CTRL=$08 (from the ``LDA #$08`` at
+# $11D9) then ``AD=SR=$0F``.  A hand-patched build overwrites the ``JSR`` with an
+# illegal 3-byte ``BIT`` no-op ($2C), so the onset frame emits NO SID write (the
+# note onset slips one frame, to instrument-init).  The opcode is read from the
+# code so both encodings are modelled (like ``pw_min_shift``/``release_...``).
+V1D_ONSET_CALL_REL = 0x1DB  # JSR/BIT onset-helper call site
+V1D_ONSET_CTRL_REL = 0x1D9  # LDA #imm feeding the helper's CTRL store ($08)
+V1D_ONSET_BIT_OP = 0x2C  # BIT abs -- onset-helper call no-op'd (no SID write)
+V1D_ONSET_ADSR_IMM = 0x0F  # the helper's AD/SR immediate
+
+# Per-frame $D418 filter-type force: the play-body tail store ``STA $D417`` at
+# $10AC is, in a few hand-patched builds, overwritten by ``JSR <helper>`` where
+# the helper does the moved ``STA $D417`` then forces the filter-type nibble
+# every frame: ``LDA #imm ; ORA $1717 ; STA $D418`` (imm = $10 LP / $20 BP).
+# Detected + replayed so the tail $D418 is emitted each frame (see
+# ``reader.tail_d418_force``).
+TAIL_STORE_REL = 0xAC  # play-body tail: stock STA $D417 ($8D) / patched JSR ($20)
+TAIL_STORE_OP = 0x8D  # stock STA $D417
+BASE_D418_REL = 0x717  # base mode/vol cell ($1717), OR'd into the forced $D418
+
 # Byte-exactness gates for the init-$1d body: a few hand-customized $1d builds
 # share the marker+layout but wrap the play entry (a relocator/extra-code stub)
 # or relocate the AD/SR write out of the modelled $184B helper.  These are

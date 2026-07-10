@@ -639,6 +639,72 @@ def release_clears_adsr(mem, base: int) -> Optional[bool]:
     return None
 
 
+def v37_onset_ctrl(mem, base: int) -> int:
+    """The CTRL immediate the init-$37 note-fetch writes to ``$D404`` ($11D9).
+
+    The stock body silences the oscillator with ``LDA #$08 : STA $D404,Y`` (the
+    TEST bit); a couple of builds patch the immediate (e.g. ``#$40``).  Read it
+    from the code when the site is the modelled ``LDA #imm`` feeding an inline
+    ``STA $D404,Y`` ($99); otherwise fall back to the stock ``$08``.
+    """
+    site = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
+    if site + 2 < len(mem) and mem[site] == 0xA9 and mem[site + 2] == 0x99:
+        return mem[site + 1]
+    return 0x08
+
+
+def v1d_note_onset(mem, base: int):
+    """The init-$1d note-onset SID writes emitted at note-fetch ($11DB helper call).
+
+    The stock body reaches the onset via ``JSR $17FB``: the helper stores
+    ``CTRL`` (the ``LDA #$08`` immediate at $11D9) then ``AD=SR=$0F``.  A
+    hand-patched build overwrites the ``JSR`` opcode with an illegal 3-byte
+    ``BIT`` no-op ($2C), so the note-fetch frame emits NO SID write and the note
+    onsets a frame later (at instrument-init).  Read from the code so both are
+    modelled.  Returns ``(ctrl_val, adsr_imm)`` for the stock call, or
+    ``(None, None)`` when the call is the ``BIT`` no-op.
+    """
+    site = (base + constants.V1D_ONSET_CALL_REL) & 0xFFFF
+    if site + 2 >= len(mem):
+        return (0x08, constants.V1D_ONSET_ADSR_IMM)
+    ctrl_val = 0x08
+    imm = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
+    if imm + 1 < len(mem) and mem[imm] == 0xA9:  # LDA #imm -> CTRL byte
+        ctrl_val = mem[imm + 1]
+    if mem[site] == constants.V1D_ONSET_BIT_OP:  # BIT abs -- onset call no-op'd
+        return (None, None)
+    return (ctrl_val, constants.V1D_ONSET_ADSR_IMM)
+
+
+def tail_d418_force(mem, base: int):
+    """The per-frame ``$D418`` filter-type value a patched play-body tail forces.
+
+    The stock play body ends the frame with ``STA $D417`` (opcode ``$8D``) at
+    $10AC.  A few hand-patched builds overwrite that store with ``JSR <helper>``
+    where the helper does the moved ``STA $D417`` then forces the filter-type
+    nibble every frame: ``LDA #imm ; ORA $1717 ; STA $D418``.  Returns ``imm``
+    (OR'd with the base ``$1717`` value at playback) when the tail matches that
+    exact shape, else ``None`` (stock tail -- no extra ``$D418`` write).
+    """
+    site = (base + constants.TAIL_STORE_REL) & 0xFFFF
+    if site + 2 >= len(mem) or mem[site] != 0x20:  # not a JSR-redirected tail
+        return None
+    tgt = mem[site + 1] | (mem[site + 2] << 8)
+    if tgt + 10 >= len(mem):
+        return None
+    # helper: 8D 17 D4 (STA $D417) | A9 imm | 0D lo hi (ORA base d418) | 8D 18 D4
+    if (
+        mem[tgt] == 0x8D
+        and (mem[tgt + 1] | (mem[tgt + 2] << 8)) == 0xD417
+        and mem[tgt + 3] == 0xA9
+        and mem[tgt + 5] == 0x0D
+        and mem[tgt + 8] == 0x8D
+        and (mem[tgt + 9] | (mem[tgt + 10] << 8)) == 0xD418
+    ):
+        return mem[tgt + 4]
+    return None
+
+
 def pw_min_shift(mem, base: int) -> int:
     """Right-shift applied to ``inst[2]`` to form the PW-sweep min bound ($124b).
 

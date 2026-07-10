@@ -109,6 +109,24 @@ TUNES = {
         "MUSICIANS/B/Bayliss_Richard/Sun_in_My_Eyes.sid",
         "Sun_in_My_Eyes.grid.txt",
     ),
+    # init-$1d build whose note-onset helper call ($11DB JSR $17FB) is patched to
+    # an illegal BIT no-op ($2C): the note-fetch frame emits no CTRL/AD/SR write
+    # (the onset slips a frame).  pydmcsid reads the opcode (v1d_note_onset) and
+    # reproduces it byte-exact.
+    "snowball": (
+        "MUSICIANS/B/Bayliss_Richard/Snowball_Caper_2.sid",
+        "Snowball_Caper_2.grid.txt",
+    ),
+    # init-$1d build whose play-body tail store ($10AC STA $D417) is redirected to
+    # a helper that also forces the $D418 filter-type nibble every frame
+    # (LDA #$10 ; ORA $1717 ; STA $D418).  pydmcsid detects it (tail_d418_force).
+    "for_vandalism": (
+        "MUSICIANS/R/Rorschach/For_Vandalism_27.sid",
+        "For_Vandalism_27.grid.txt",
+    ),
+    # init-$37 build whose note-onset CTRL immediate ($11D9 LDA #imm) is patched
+    # from the stock TEST bit $08 to $40.  pydmcsid reads it (v37_onset_ctrl).
+    "rock_zak": ("MUSICIANS/B/Brian/Rock_Zak_1.sid", "Rock_Zak_1.grid.txt"),
 }
 
 
