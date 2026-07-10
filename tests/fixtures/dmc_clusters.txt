@@ -23,6 +23,13 @@
 # (the modelled uniform body + note-cell/rest-tail sub-layouts):
 1 MUSICIANS/B/Bakker_Nantco/Glorious.sid
 1 MUSICIANS/B/Bayliss_Richard/Rocket_n_Roll.sid
+# Relocated play entry (dispatch play -> base+$50, not base+$85): the same v1d
+# engine with its play entry shifted out of the id-string region (engine
+# unchanged at base+$b0, order table located from the init store site).  The
+# generalised anchor recognises + plays these byte-exact:
+1 DEMOS/G-L/Kordiaukis_Mix.sid
+1 DEMOS/G-L/Love_with_U.sid
+1 MUSICIANS/L/Logan/Roboczy.sid
 # Hand-customized init-$1d builds: recognised as $1d but NOT byte-exact -- a
 # wrapped play entry (relocator/extra-code stub, play != base+3) or a relocated
 # AD/SR helper (JSR $1230 not the modelled $184b):

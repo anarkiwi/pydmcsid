@@ -27,6 +27,10 @@ TUNES = {
         "Rocket_n_Roll.grid.txt",
     ),
     "techno_bah": ("MUSICIANS/D/Doxx/Techno_BAH.sid", "Techno_BAH.grid.txt"),
+    # Relocated play entry (dispatch play -> base+$50): the v1d engine with its
+    # play entry shifted out of the id-string region, engine unchanged at
+    # base+$b0.  Recognised + played byte-exact by the generalised anchor.
+    "kordiaukis": ("DEMOS/G-L/Kordiaukis_Mix.sid", "Kordiaukis_Mix.grid.txt"),
 }
 
 

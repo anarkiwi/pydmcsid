@@ -33,7 +33,7 @@ from pysidtracker.registers import (
 )
 
 from pydmcsid import constants
-from pydmcsid.reader import Song
+from pydmcsid.reader import Song, order_table_base
 
 
 class Player:
@@ -74,7 +74,12 @@ class Player:
         self.b_instr = operand(constants.INSTR_OP)
         self.b_pat_lo = operand(constants.PATTERN_LO_OP)
         self.b_pat_hi = operand(constants.PATTERN_HI_OP)
-        self.b_order_tbl = operand(self.order_table_op)
+        # Prefer the init-store-site signature (layout-independent); fall back to
+        # the fixed code operand for the standard layouts if it is not found.
+        order_sig = order_table_base(self.m, song.base)
+        self.b_order_tbl = (
+            order_sig if order_sig is not None else operand(self.order_table_op)
+        )
         self.b_pwtab = operand(constants.PW_TABLE_OP)
         self.b_arp_ctrl = operand(constants.ARP_CTRL_OP)
         self.b_arp_note = operand(constants.ARP_NOTE_OP)
