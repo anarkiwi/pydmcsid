@@ -100,12 +100,107 @@ REST_TAIL_1591 = 0x591  # waveform re-output only
 # nearly all tunes, but a per-tune code constant a few builds hand-edited).
 BURST_IMM_REL = 0x30B
 
+# init-$1d note-onset helper call ($11DB): the note-fetch frame emits the onset
+# via ``JSR $17FB`` -- the helper stores CTRL=$08 (from the ``LDA #$08`` at
+# $11D9) then ``AD=SR=$0F``.  A hand-patched build overwrites the ``JSR`` with an
+# illegal 3-byte ``BIT`` no-op ($2C), so the onset frame emits NO SID write (the
+# note onset slips one frame, to instrument-init).  The opcode is read from the
+# code so both encodings are modelled (like ``pw_min_shift``/``release_...``).
+V1D_ONSET_CALL_REL = 0x1DB  # JSR/BIT onset-helper call site
+V1D_ONSET_CTRL_REL = 0x1D9  # LDA #imm feeding the helper's CTRL store ($08)
+V1D_ONSET_BIT_OP = 0x2C  # BIT abs -- onset-helper call no-op'd (no SID write)
+V1D_ONSET_ADSR_IMM = 0x0F  # the helper's AD/SR immediate
+
+# Per-frame $D418 filter-type force: the play-body tail store ``STA $D417`` at
+# $10AC is, in a few hand-patched builds, overwritten by ``JSR <helper>`` where
+# the helper does the moved ``STA $D417`` then forces the filter-type nibble
+# every frame: ``LDA #imm ; ORA $1717 ; STA $D418`` (imm = $10 LP / $20 BP).
+# Detected + replayed so the tail $D418 is emitted each frame (see
+# ``reader.tail_d418_force``).
+TAIL_STORE_REL = 0xAC  # play-body tail: stock STA $D417 ($8D) / patched JSR ($20)
+TAIL_STORE_OP = 0x8D  # stock STA $D417
+BASE_D418_REL = 0x717  # base mode/vol cell ($1717), OR'd into the forced $D418
+
 # Byte-exactness gates for the init-$1d body: a few hand-customized $1d builds
 # share the marker+layout but wrap the play entry (a relocator/extra-code stub)
 # or relocate the AD/SR write out of the modelled $184B helper.  These are
 # recognised as the $1d generation but NOT reproduced byte-exact, so they are
 # gated out of the byte-exact claim.
+# Release gate-off site ($133d): inline ``STA $100f,X`` ($9D, $37 stock, AD/SR
+# static) or ``JSR`` ($20) a helper that may also zero AD/SR (the $1d $17ec
+# clear, or a $37 scene edit).  See ``reader.release_clears_adsr``.
+V37_RELEASE_SITE_REL = 0x33D
+
+# PW-sweep min-bound shift chain ($124b): the stock body forms
+# ``pw_min = inst[2] >> 4`` with four ``LSR A`` (``4a 4a 4a 4a``) before the
+# ``STA $1756,X`` store.  A hand-patched build overwrites the third ``LSR`` with
+# an illegal 2-byte no-op (``$17``; py65 runs it as a 2-byte NOP that eats the
+# following ``LSR``), leaving two ``LSR A`` -> ``pw_min = inst[2] >> 2``.  The
+# shift is read from the code (count of ``LSR A`` before the store site opcode).
+PW_MIN_SHIFT_REL = 0x24B  # first ``LSR A`` of the pw_min shift chain
+PW_MIN_STORE_OP = 0x9D  # STA $1756,X -- terminates the shift chain
+PW_MIN_SHIFT_STD = 4  # stock shift (four ``LSR A``)
+
+# --- $a1 engine (V5-era reorganised player body) ---------------------------
+# A genuinely different DMC generation: the play body sits at ``base+$a1`` (the
+# dispatch play-JMP target) with a reorganised work-RAM map and a richer feature
+# set (global filter cutoff sweep, volume fade, per-voice PW/vibrato/slide
+# wavetables).  Recognised + reproduced byte-exact by ``PlayerA1``; gated wholly
+# separately from the ``base+$85`` body so the v37/v1d engines are unchanged.
+DMC_PLAY_A1_REL = 0xA1  # play-body offset from base for the $a1 engine
+
+# Play-body operand offsets (rel to base): per-tune table bases, read from the
+# ``LDA <table>,Y`` operands the same way the base engine reads its tables.  The
+# instruction opcodes are identical across the family; only these operands (and
+# the two patchable release stores below) vary per tune (the data tables
+# relocate as the song size changes).
+A1_PATTERN_LO_OP = 0x14F  # LDA <patptr_lo>,Y @ $114e
+A1_PATTERN_HI_OP = 0x154  # LDA <patptr_hi>,Y @ $1153
+A1_INST_OP = 0x2CC  # LDA <instruments>,Y @ $12cb (8-byte records)
+A1_WT_CTRL_OP = 0x386  # LDA <wavetable ctrl>,Y @ $1385
+A1_WT_ARG_OP = 0x390  # LDA <wavetable arg>,Y @ $138f
+A1_PW_A_OP = 0x3C1  # LDA <pw hi/step>,Y @ $13c0
+A1_PW_B_OP = 0x3C7  # LDA <pw lo/step>,Y @ $13c6
+A1_FILT_A_OP = 0x3F0  # LDA <filter hi/step>,Y @ $13ef
+A1_FILT_B_OP = 0x3F6  # LDA <filter lo/step>,Y @ $13f5
+A1_FREQ_LO_REL = 0x70F  # note->freq lo table (fixed: right after the code)
+A1_FREQ_HI_REL = 0x76F  # note->freq hi table (fixed)
+A1_ORDER_STORE_REL = 0x17CF  # init copies orderlist ptr lo to $17cf,X
+
+# Per-build patchable release stores: a scene edit may overwrite the store with
+# an illegal 3-byte ``BIT`` no-op ($2c) to disable it (the analog of
+# ``release_clears_adsr`` in the base engine), so the behaviour is read from the
+# opcode rather than assumed.
+A1_REL_SR_CLEAR_REL = 0x6C7  # STA $d406,Y ($99) / BIT ($2c): release SR clear
+A1_REL_GATE_REL = 0x6E3  # STA $1817,X ($9d) / BIT ($2c): release gate-off mask
+
+# Body signature: sha256 of the play body ($a1..$70e) with the per-tune table
+# operands (any 3-byte instruction operand ``>= base+$846``, the per-tune data
+# region) and the two patchable release opcodes zeroed.  All 1198 family tunes
+# share this exact normalised body; it rejects both the unrelated engine that
+# also dispatches play to ``base+$a1`` and the reorganised-wavetable sub-variant.
+A1_BODY_LO = 0xA1
+A1_BODY_HI = 0x70F
+A1_DATA_REL = 0x846  # per-tune data starts here; operands >= this are wildcarded
+A1_BODY_SHA256 = "fad9e7f9195f89dfce507681a9ee54fbec44507d5295e8e2e2d899834670914c"
+
+# The header init/play vectors must resolve into the resident player (within this
+# window of the base) for byte-exact playback; builds wrapped by a self-modifying
+# subtune selector or a multispeed divider are recognised but gated out.
+A1_DISPATCH_WINDOW = 0x20
+
 STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
+
+# --- benign play-wrapper follower -------------------------------------------
+# A handful of builds append a thin play stub ahead of the resident dispatch: the
+# header play vector is not base+3 but a short wrapper that statically reduces to a
+# single JMP into the standard play entry -- a pure relocator/thunk, or a
+# transparent multispeed divider whose every branch re-enters the SAME play body.
+# These reproduce byte-exact (the resident body is unchanged; the player renders it
+# from the base regardless of the header vector), so following the wrapper admits
+# them.  Bounds on the static follow (crash-safe; every read is guarded):
+WRAP_FOLLOW_BUDGET = 256  # max instructions decoded across all explored paths
+WRAP_INIT_BUDGET = 64  # max instructions decoded simulating init's self-patches
 INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
 INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)
 PW_TABLE_OP = 0x358  # LDA $17B3,Y @ $1357  (PW-sweep nibble table)
@@ -114,3 +209,112 @@ ARP_NOTE_OP = 0x5B9  # LDA $17CA,Y @ $15B8  (wavetable note)
 FILT_CTRL_OP = 0x296  # LDA $17CE,Y @ $1295  (filter presets)
 FILT_STEP_LO_OP = 0x3E7  # LDA $17D2,Y @ $13E6  (filter sweep step lo)
 FILT_STEP_HI_OP = 0x3ED  # LDA $17D8,Y @ $13EC  (filter sweep step hi)
+
+# --- $95 engine (compact, self-modifying player body) ----------------------
+# A distinct earlier-lineage DMC generation whose play body sits at ``base+$95``
+# (the dispatch play-JMP target).  A single global tempo divider ($1016) chooses,
+# per frame, between a row-advance pass ($10e1) and a steady tick ($1373) for all
+# three voices; the SID voice stride is read from the preset table ``$100c,X`` =
+# {0,7,14}.  The filter cutoff-hi is composed once per frame as a global
+# accumulator plus a per-tune base offset (``$d416 = $1019 + $1853``).  Recognised
+# + reproduced byte-exact by ``Player95``; gated wholly separately from the
+# ``$85``/``$a1`` bodies so those engines are unchanged.
+DMC_PLAY_95_REL = 0x95  # play-body offset from base for the $95 engine
+
+# Play-body operand offsets (rel to base): per-tune table bases, read from the
+# ``LDA <table>,Y`` operands.  The note-freq tables sit at a FIXED rel offset
+# (right after the code, ahead of the work RAM), so they are base-relative
+# constants, not read operands.
+N95_ORDER_OP = 0x47  # LDA <ordertable>,Y @ $1046 (per-subtune 8-byte records)
+N95_PATTERN_LO_OP = 0x147  # LDA <patptr_lo>,Y @ $1146
+N95_PATTERN_HI_OP = 0x14C  # LDA <patptr_hi>,Y @ $114b
+N95_INST_OP = 0x339  # LDA <instruments>,Y @ $1338 (8-byte records)
+N95_WT_CTRL_OP = 0x658  # LDA <wavetable ctrl>,Y @ $1657
+N95_WT_ARG_OP = 0x65F  # LDA <wavetable arg>,Y @ $165e
+N95_PW_A_OP = 0x4D0  # LDA <pw hi/step>,Y @ $14cf
+N95_PW_B_OP = 0x4C6  # LDA <pw lo/step>,Y @ $14c5
+N95_FILT_A_OP = 0x496  # LDA <filter hi/step>,Y @ $1495
+N95_FILT_B_OP = 0x4A7  # LDA <filter lo/step>,Y @ $14a6
+N95_FREQ_LO_REL = 0x719  # note->freq lo table (fixed: right after the code)
+N95_FREQ_HI_REL = 0x779  # note->freq hi table (fixed)
+N95_ORDER_STORE_REL = 0x17D9  # init copies orderlist ptr lo to $17d9,X
+
+# Body signature: sha256 of the play body ($95..$718) with the per-tune table
+# operands (any 3-byte instruction operand ``>= base+$858``, the per-tune data
+# region past the fixed freq tables + work RAM) zeroed, plus the self-modified
+# tempo-reload seed byte at ``$10bf`` (init overwrites it from the subtune record,
+# so its source value is irrelevant) wildcarded.  513 family tunes share this
+# normalised body; it rejects the reorganised $95 sub-versions (groove counter,
+# relocated filter cell, different zero-page pointers) which are not modelled.
+N95_BODY_LO = 0x95
+N95_BODY_HI = 0x719
+N95_DATA_REL = 0x858  # per-tune data starts here; operands >= this are wildcarded
+N95_RELOAD_SEED_REL = 0xBF  # self-modified $1016 tempo-reload immediate (wildcard)
+N95_BODY_SHA256 = "43f32e5705a76585f41e1ad001db15a2c4b244a72a77d92a4900008fceb3de4c"
+
+# The header init/play vectors must resolve into the resident player (within this
+# window of the base) for byte-exact playback; builds wrapped by a self-modifying
+# subtune selector or a multispeed divider (play/init far outside) are recognised
+# but gated out.
+N95_DISPATCH_WINDOW = 0x20
+
+# --- $94a family (init-$1d body behind a 2-level PSID dispatch) -------------
+# ~224 HVSC tunes whose PSID JMP table jumps into a SECOND JMP table (the sidid
+# $947/$94a/$937 cluster): dispatch play -> base+$94a, which is itself a
+# ``JMP real_play`` into the standard init-$1d ($85) DMC body -- authored at a
+# VIRTUAL base (base+1..base+13, shifted by the family's longer id/dispatch stub).
+# Following that second JMP and deriving the engine base (real_play-$85) recovers
+# the resident body, which the reader already models (:func:`_play_body_ok`).  So
+# the byte-exact-reproducible members are the init-$1d engine relocated; they are
+# routed to :class:`~pydmcsid.player.PlayerNN` (a thin :class:`PlayerV1D`) at the
+# derived base.  The reader gates them wholly separately (variant ``"nn"``) so the
+# $85/$a1/$95 bodies are unaffected: the 2-level follow only fires when the
+# dispatch play target is itself a ``JMP`` (the other generations' play targets are
+# the body).  Deferred sub-variants (recognised, NOT byte-exact): the appended
+# multispeed/second-engine wrappers that drive the reorganised base+$937 steady
+# body instead of the $85 body, and the $85 sub-variant whose note onset writes
+# CTRL inline (STA) rather than the modelled JMP/BIT form -- see
+# :func:`_nn_byte_exact`.
+DMC_PLAY_NN_REL = 0x94A  # dispatch play-JMP offset from the table base (family sig)
+
+# How far below the derived engine base to scan for the family's 2-level dispatch
+# table (its play entry is the JMP that reaches ``base+$85``).  The virtual-base
+# shift is +1 for almost all builds, +13 for a few whose id/dispatch stub is
+# longer; a $20 window covers both with margin.
+NN_BASE_SCAN = 0x20
+NN_DISPATCH_WINDOW = 0x20  # header play/init resident-window (each side of base)
+
+# Byte-exact discriminators (read from the code, not a whole-body SHA: the $85
+# body embeds the note-freq tables mid-range, so an a1/n95-style linear-walk
+# normalisation desyncs).  The modelled init-$1d body reaches its note onset via a
+# ``JMP`` at base+$318 and no-ops a vibrato-setup store with an illegal ``BIT`` at
+# base+$58e; the unmodelled sub-variant re-encodes both as inline ``STA`` (writes
+# CTRL/vibrato directly), so these two opcodes separate them cleanly.
+NN_NOTE_ONSET_REL = 0x318
+NN_NOTE_ONSET_OP = 0x4C  # JMP -- modelled note-onset dispatch
+NN_VIBRATO_REL = 0x58E
+NN_VIBRATO_OP = 0x2C  # BIT -- modelled (no-op'd) vibrato-setup store
+
+# --- $937 appended-wrapper sub-family (CIA multispeed over the $85/$1d body) --
+# ~49 members of the $94a cluster whose PSID header init/play resolve OUTSIDE the
+# resident dispatch, into an appended $2xxx wrapper: a divide-by-N CIA-multispeed
+# divider that, per play call, either JMPs the resident MAIN play (the standard
+# $85/v1d body, once every N calls) or a reorganised SECONDARY dispatch body.  The
+# secondary body sits at ``base+$936`` -- ``LDA flag / BEQ full / JSR refresh`` --
+# and when the enable flag is set it runs the per-voice REFRESH body at
+# ``base+$8f0``: for each voice whose per-phase mask (5-entry tables, phase index
+# advancing mod 5) is nonzero it runs the standard NON-ROW per-voice tick
+# (``$11f9``: note-trigger / sustain), with NO tempo divider, filter-flag reset or
+# filter-register tail.  Both entries drive the SAME modelled body, so playback
+# reuses :class:`~pydmcsid.player.PlayerV1D`; only the per-frame loop differs.
+# Recognised as variant ``nn`` (uniform recognition) and reproduced byte-exact by
+# :class:`~pydmcsid.player.Player937`; detected statically (:func:`_nn_wrapper_937`)
+# so the 157 resident-dispatch ``nn`` tunes + the other engines never regress.
+NN937_BODY_REL = 0x936  # secondary-dispatch body: LDA flag / BEQ / JSR refresh
+NN937_STEADY_REL = 0x8F0  # per-voice refresh body (masked non-row ticks)
+NN937_FLAG = 0x1926  # _a() arg for the enable flag ($1927): refresh vs full play
+NN937_PHASE = 0x1925  # _a() arg for the phase index ($1926), advances mod 5
+NN937_MASK = (0x1927, 0x192C, 0x1931)  # _a() args: per-voice 5-entry phase masks
+NN937_MOD = 5  # phase modulus (CPY #$05 in the refresh body)
+NN937_WRAP_SCAN = 0x20  # bytes of the appended wrapper to scan for its constants
+NN937_DEC_OP = 0xCE  # the wrapper play opens ``DEC counter`` (the multispeed gate)

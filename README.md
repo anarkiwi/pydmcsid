@@ -25,6 +25,9 @@ print(song.byte_exact())               # is this build reproduced frame-for-fram
 
 for w in pydmcsid.iter_register_writes(song, max_frames=50 * 60):
     print(w.clock, w.reg, w.val)       # absolute CPU cycle, $D4xx reg offset, value
+
+pydmcsid.write(song, "out.prg")        # export the packed player+data (editor-loadable)
+pydmcsid.write(song, "out.sid")        # ...or a PSID/RSID container
 ```
 
 `iter_register_writes` follows the shared `py*` register-log convention: one

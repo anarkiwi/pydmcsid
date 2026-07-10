@@ -17,28 +17,61 @@ per-tune table bases are read from the player-code operands — no baked
 addresses, so a differently-sized tune relocates its tables and is still found.
 Container headers are not trusted.
 
-Recognition anchors on the resident player's *play body* at `base+$85` (the
-opening `DEC tempo_ctr`, confirmed by opcode + operand) reached via the dispatch
-`JMP` table's play entry. This is load-independent (the JMP target and the
-body's own operand both track the base, so relocated and short-stub-prepended
-images are found) and init-independent (the init entry varies, commonly `$1d` or
-`$37`). It accepts both the original 4-entry (init/play/stop/FUN) dispatch and
-the 2-entry (init/play only) builds that carry the identical body, while
-rejecting reorganised bodies that only share the DMC data-table structure.
-Across HVSC (sidid `DMC` family) it recognises 7251 of 10695 tunes.
+Recognition anchors on the resident player's *play body* (the opening
+`DEC tempo_ctr`, confirmed by opcode + operand `base+$718`) reached via the
+dispatch `JMP` table's play entry. This is load-independent (the JMP target and
+the body's own operand both track the base, so relocated and short-stub-prepended
+images are found), init-independent (the init entry varies, commonly `$1d` or
+`$37`) and play-offset-independent: the play body is checked wherever the
+dispatch points, so builds whose id-string/init region shifts the play entry
+earlier (e.g. dispatch play → `base+$50`, the engine byte-identical downstream at
+`base+$b0`) are found — the older anchor required exactly `base+$85`. It accepts
+both the original 4-entry (init/play/stop/FUN) dispatch and the 2-entry
+(init/play only) builds that carry the identical body, while rejecting
+reorganised bodies (a different tempo work cell) that only share the DMC
+data-table structure.
 
-Reorganised bodies that are **not** modeled (different play offset / work-RAM
-layout, rejected by `parse`): `DMC_V6.x` (a 2-entry `$50`/`$7b` vector) and the
-`$40`/`$a1`, `$40`/`$95`/`$d3`, `$0718`/`$50` and `$947`/`$94a`/`$937` families.
+Three reorganised bodies dispatched to a non-`$85` play offset are modeled by
+their own transcriptions, each gated by a normalised-body signature disjoint from
+the `$85` anchor so the base engine is provably unaffected:
+
+- `base+$a1` — the V5-era `PlayerA1` engine (own `$17cf..` work-RAM map, two-frame
+  startup gate, per-voice wavetable/16-bit PW+filter sweeps, global cutoff sweep +
+  volume fade, two per-build patchable release stores). Signature: `A1_BODY_SHA256`.
+- `base+$95` — the compact self-modifying `Player95` engine (global tempo divider
+  `$1016` selecting a row-advance vs steady-tick pass, preset voice stride
+  `$100c,X`, global cutoff sweep on voice 2). Signature: `N95_BODY_SHA256`.
+- the `$947`/`$94a`/`$937` dispatch — `PlayerNN`: the standard init-`$1d` body
+  behind a 2-level PSID dispatch (the play entry `JMP`s into the ordinary body at
+  a virtual base `load+1` or `load+13`), so it reuses `PlayerV1D` at the derived
+  base rather than a separate transcription.
+
+Across HVSC (sidid `DMC` family) it recognises 9902 of 10759 tunes, 9702 of them
+reproduced byte-exact (v37 2903, v1d 4925, `$a1` 1196, `$95` 472, `$94a` 206).
+The byte-exact gate follows a benign play-wrapper (a thunk that JMPs into the
+standard entry) rather than deferring on `play != base+3`, and reads hand-patched
+onset / `$D418`-tail edits from the code so those builds reproduce too. Still
+unmodeled: the `DMC_V6.x` `$50`/`$7b` vector; the `base+$937` inline-CTRL
+note-onset sub-variant of the `$94a` cluster; and a long tail of distinct
+single-tune scene micro-patches (a residual &lt;1% of the claimed v37/v1d set is
+gated as byte-exact but diverges on unmodeled per-tune edits).
 
 ## Data model
 
 The play routine models: tempo divider, per-voice orderlist walk (transpose /
 loop / stop), pattern walk (note / instrument-select / duration / effect /
-gate), stride-11 instrument records driving PW init + a 16-bit PW sweep, the
-`$FF`-arp wavetable, triangle vibrato, glide, the pitch-slide effect and a
-6-step filter sweep, the hard-restart window, and the final per-voice frequency
-compose.
+gate; the pattern markers are *rest / switch(tie) / end-of-pattern*, encoded
+`$fe/$fd/$ff` in the init-`$37` body and `$7e/$7d/$7f` in the init-`$1d` body),
+stride-11 instrument records driving PW init + a 16-bit PW sweep, the `$FF`-arp
+wavetable, triangle vibrato, glide, the pitch-slide effect and a 6-step filter
+sweep, the hard-restart window, and the final per-voice frequency compose.
+
+The note-release gate-off ($133d) either leaves AD/SR static (the `$37` stock
+inline `STA $100f,X`) or clears AD/SR=0 as an envelope-clearing hard-restart (the
+`$1d` `$17ec` helper, or a scene-modified `$37` build patched to `JSR` a clearing
+routine). Both generations ship both variants, so `release_clears_adsr` reads the
+behaviour from the actual release code (an inline store, or a `JSR` helper
+followed to its first `RTS`) rather than assuming it per generation.
 
 ## Player and playback notes
 
@@ -47,15 +80,27 @@ per SID write, frames `cycles_per_frame` apart (the shared `py*` register-log
 convention, matching `pygoattracker` / `pymusicassembler`). The DMC player emits
 one tight write burst per VBI play call.
 
-`song.byte_exact()` reports whether the recognised body is the generation the
-transcription reproduces byte-for-byte — the init-`$37` generation (pattern
-markers `$fe/$fd/$ff`), ~2878 tunes. The later init-`$1d` generation shares the
-anchor and data-table layout but re-encodes the markers as `$7e/$7d/$7f` and
-restructures note setup, so it is recognised and parsed but not yet played
-byte-exact. `tests/test_corpus.py` and `tests/test_corpus_clusters.py` validate
-a deterministic HVSC sample against a local `$HVSC` tree; four `.grid.txt`
-byte-exact references (plus a 2-entry-dispatch and a relocated build) are checked
-frame-exact.
+`song.byte_exact()` reports whether the recognised body is one the transcription
+reproduces byte-for-byte: the init-`$37` and the modelled init-`$1d` generations
+(both release variants) and the reorganised `$a1`/`$95`/`$94a` engines, gated out
+only for a build whose play entry is wrapped, whose AD/SR helper is relocated,
+whose release is patched to an unrecognised routine, or (for the reorganised
+engines) whose header vectors resolve outside the resident player (a
+subtune-selector / multispeed wrapper). `tests/test_corpus.py` and
+`tests/test_corpus_clusters.py` validate a
+deterministic HVSC sample against a local `$HVSC` tree, and the committed
+`.grid.txt` frozen py65-oracle references are checked frame-exact — covering both
+generations, a 2-entry-dispatch build, relocated builds (load ≠ `$1000` and the
+relocated `base+$50` play entry), and all four release AD/SR combinations
+(`$37` stock/patched, `$1d` clear/no-clear).
+
+## Export
+
+`to_prg(song)` / `to_sid(song)` / `write(song, path)` serialize a parsed tune
+back to the packed player+data image the DMC editor loads (`to_prg` a bare `.prg`
+= load address + resident image; `to_sid` a PSID/RSID container). The resident
+image is reproduced byte-for-byte, so `parse(to_prg(song))` yields the same tune
+and a re-wrapped `.sid` reproduces it frame-for-frame on the py65 oracle.
 
 ## References
 
