@@ -493,28 +493,69 @@ def _n95_byte_exact(mem, base: int, play, init) -> bool:
     return n95_order_table_base(mem, base) is not None
 
 
+def _nn_body_modelled(mem, base: int) -> bool:
+    """True if the ``$94a`` body at ``base`` is the modelled init-``$1d`` encoding.
+
+    Read from the two opcode discriminators (not a whole-body SHA: the ``$85``
+    body embeds the note-freq tables mid-range, so a linear-walk normalisation
+    desyncs): the modelled body reaches note onset via a ``JMP`` at ``base+$318``
+    and no-ops a vibrato-setup store with an illegal ``BIT`` at ``base+$58e``; the
+    unmodelled sub-variant re-encodes both as inline ``STA``.
+    """
+    if mem[(base + constants.NN_NOTE_ONSET_REL) & 0xFFFF] != constants.NN_NOTE_ONSET_OP:
+        return False
+    return mem[(base + constants.NN_VIBRATO_REL) & 0xFFFF] == constants.NN_VIBRATO_OP
+
+
+def _nn_wrapper_937(mem, base: int, play, init) -> bool:
+    """True if this is the ``$937`` CIA-multispeed appended-wrapper sub-family.
+
+    The header play/init resolve OUTSIDE the resident dispatch, into an appended
+    ``$2xxx`` divide-by-N multispeed wrapper (its play vector opens ``DEC counter``)
+    that drives the resident SECONDARY-dispatch body at ``base+$936`` -- an
+    ``LDA flag / BEQ / JSR refresh`` whose refresh entry is the per-voice masked
+    non-row tick at ``base+$8f0`` (see :data:`constants.NN937_BODY_REL`).  Both
+    entries drive the modelled ``$85``/``$1d`` body, so it is reproduced byte-exact
+    by :class:`~pydmcsid.player.Player937`.  All reads are bounds-guarded so a
+    truncated image returns ``False`` rather than raising.
+    """
+    if play is None or init is None:
+        return False
+    if not _nn_body_modelled(mem, base):
+        return False
+    body = (base + constants.NN937_BODY_REL) & 0xFFFF
+    if body + 8 >= len(mem):
+        return False
+    if mem[body] != 0xAD or mem[body + 3] != 0xF0 or mem[body + 5] != 0x20:
+        return False  # not ``LDA flag / BEQ full / JSR refresh``
+    steady = mem[body + 6] | (mem[body + 7] << 8)
+    if ((steady - base) & 0xFFFF) != constants.NN937_STEADY_REL:
+        return False
+    if steady + 4 >= len(mem) or mem[steady] != 0xAC or mem[steady + 3] != 0xB9:
+        return False  # refresh body is not ``LDY phase / LDA mask,Y``
+    return play + 2 < len(mem) and mem[play] == constants.NN937_DEC_OP
+
+
 def _nn_byte_exact(mem, base: int, play, init) -> bool:
     """Whether the ``$94a``-family body at ``base`` is reproduced byte-exact.
 
     The reproducible members are the init-``$1d`` (``$85``) body relocated behind
     the 2-level dispatch, played by :class:`~pydmcsid.player.PlayerNN` at the
-    derived base.  Gated out (recognised, NOT byte-exact) when:
-
-    * the header play/init vectors resolve outside the resident dispatch (an
-      appended multispeed / second-engine wrapper -- these builds drive the
-      reorganised ``base+$937`` steady body instead of the ``$85`` body); or
-    * the note-onset / vibrato-setup encoding is the unmodelled sub-variant (the
-      ``$85`` body whose note trigger writes CTRL inline, ``STA``, in place of the
-      modelled ``JMP``/``BIT`` -- see :data:`constants.NN_NOTE_ONSET_OP`).
+    derived base.  A build whose header play/init resolve outside the resident
+    dispatch is byte-exact only when it is the ``$937`` CIA-multispeed appended
+    wrapper (:func:`_nn_wrapper_937`, played by :class:`Player937`); any other
+    outside-window wrapper (a second engine / self-modifying selector) is gated
+    out.  A resident-dispatch build is byte-exact only when its note-onset /
+    vibrato-setup encoding is the modelled form (:func:`_nn_body_modelled`); the
+    unmodelled inline-``STA`` sub-variant is gated out.
     """
     win = constants.NN_DISPATCH_WINDOW
-    if play is not None and not base - win <= play < base + win:
-        return False
-    if init is not None and not base - win <= init < base + win:
-        return False
-    if mem[(base + constants.NN_NOTE_ONSET_REL) & 0xFFFF] != constants.NN_NOTE_ONSET_OP:
-        return False
-    return mem[(base + constants.NN_VIBRATO_REL) & 0xFFFF] == constants.NN_VIBRATO_OP
+    resident = (play is None or base - win <= play < base + win) and (
+        init is None or base - win <= init < base + win
+    )
+    if not resident:
+        return _nn_wrapper_937(mem, base, play, init)
+    return _nn_body_modelled(mem, base)
 
 
 def dmc_byte_exact(

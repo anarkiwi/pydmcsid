@@ -74,6 +74,26 @@ TUNES = {
     "high_balance": ("MUSICIANS/G/Glover/High_Balance.sid", "High_Balance.grid.txt"),
     "poeci": ("MUSICIANS/W/Wodnik/Poeci.sid", "Poeci.grid.txt"),
     "ninety_sec": ("MUSICIANS/P/Psych858o/90_Seconds.sid", "90_Seconds.grid.txt"),
+    # $937 CIA-multispeed appended-wrapper sub-family of the $94a line: the header
+    # play/init resolve into an appended $2xxx divide-by-6 multispeed wrapper that
+    # runs the resident MAIN play (the modelled $1d body) once every 6 calls and a
+    # reorganised per-voice REFRESH body ($base+$8f0, masked non-row ticks) on the
+    # other 5 -- reproduced byte-exact by Player937.  Dude_with_Attitude is the
+    # canonical all-voices-every-phase build; Rusty/Losing/Coffee exercise the
+    # per-voice phase masks (voices refreshed on only some of the 5 sub-phases).
+    "dude": (
+        "MUSICIANS/P/Psych858o/Dude_with_Attitude.sid",
+        "Dude_with_Attitude.grid.txt",
+    ),
+    "rusty": (
+        "MUSICIANS/P/Psych858o/My_Rusty_Love_C64.sid",
+        "My_Rusty_Love_C64.grid.txt",
+    ),
+    "losing": ("MUSICIANS/P/Psych858o/Losing_Control.sid", "Losing_Control.grid.txt"),
+    "coffee": (
+        "MUSICIANS/P/Psych858o/Cup_of_Coffee_and_Few_Cigs.sid",
+        "Cup_of_Coffee_and_Few_Cigs.grid.txt",
+    ),
 }
 
 

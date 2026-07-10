@@ -446,6 +446,125 @@ def test_nn_dispatch_bounds_safe():
         pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x960]))
 
 
+def _nn937_image(reload=6, seed=1):
+    """A synthetic $937 CIA-multispeed appended-wrapper image (mem, play, init).
+
+    Extends the $94a 2-level dispatch (:func:`_nn_body`, virtual base $1001) with
+    the reorganised SECONDARY body at ``base+$936`` (``LDA flag / BEQ / JSR``
+    refresh at ``base+$8f0``) and an appended $2400 wrapper: a divide-by-``reload``
+    divider (``DEC counter``) reached by the PSID play vector, seeded by the init
+    vector.  Returns the raw 64K image plus the wrapper play/init addresses.
+    """
+    mem = bytearray(0x10000)
+    body = _nn_body()
+    mem[0x1000 : 0x1000 + len(body)] = body
+    mem[0x1937:0x193F] = bytes(  # secondary body: LDA $1927 / BEQ / JSR $18f1 / RTS
+        [0xAD, 0x27, 0x19, 0xF0, 0x04, 0x20, 0xF1, 0x18]
+    )
+    mem[0x18F1:0x18F5] = bytes([0xAC, 0x26, 0x19, 0xB9])  # refresh: LDY $1926 / LDA ..
+    mem[0x1927] = 0x01  # enable flag
+    ctr = 0x24B7
+    mem[0x2400:0x2408] = bytes(  # init: JSR $1000 / LDX #seed / STX ctr / RTS
+        [0x20, 0x00, 0x10, 0xA2, seed, 0x8E, ctr & 0xFF, ctr >> 8]
+    ) + bytes([0x60])
+    mem[0x2411:0x2420] = bytes(  # play: DEC ctr / LDX#0 / BNE / LDX #reload / STX ctr
+        [0xCE, ctr & 0xFF, ctr >> 8, 0xA2, 0x00, 0xD0, 0x08, 0xA2, reload]
+    ) + bytes([0x8E, ctr & 0xFF, ctr >> 8, 0x4C, 0x03, 0x10])
+    return mem, 0x2411, 0x2400
+
+
+def test_nn937_wrapper_recognised_byte_exact():
+    """A synthetic $937 wrapper is variant "nn", byte-exact, and routes to Player937."""
+    from pydmcsid.player import Player937, _player_for
+    from pydmcsid.reader import Song, _nn_wrapper_937, dmc_byte_exact
+
+    mem, play, init = _nn937_image()
+    assert _nn_wrapper_937(mem, 0x1001, play, init)
+    assert dmc_byte_exact(mem, 0x1001, play=play, init=init)
+    song = Song(
+        mem=mem,
+        load=0x1000,
+        base=0x1001,
+        image_len=0x1420,
+        songs=1,
+        start_song=1,
+        play=play,
+        init=init,
+    )
+    assert song.variant() == "nn"
+    player = _player_for(song, 0)
+    assert isinstance(player, Player937)
+    assert player._reload == 6 and player._ms == 1  # read from the wrapper code
+
+
+def test_nn937_wrapper_immediates_read_from_code():
+    """Player937 reads the divider period + seed from the wrapper, not assumes them."""
+    from pydmcsid.player import Player937
+    from pydmcsid.reader import Song
+
+    mem, play, init = _nn937_image(reload=3, seed=2)
+    song = Song(
+        mem=mem,
+        load=0x1000,
+        base=0x1001,
+        image_len=0x1420,
+        songs=1,
+        start_song=1,
+        play=play,
+        init=init,
+    )
+    player = Player937(song, 0)
+    assert player._reload == 3 and player._ms == 2
+    for _ in range(12):  # a handful of wrapper calls: main + refresh, no crash
+        for reg, val in player.play_frame():
+            assert 0 <= reg - 0xD400 < 25 and 0 <= val <= 0xFF
+
+    # Enable flag cleared: every intermediate wrapper call falls back to the full
+    # resident play (the reorganised refresh body is a no-op for that build).
+    mem[0x1927] = 0x00
+    disabled = Player937(song, 0)
+    for _ in range(4):
+        disabled.play_frame()
+
+    # No ``LDX #imm : STX counter`` in the wrapper -> the seed/reload fall back to 1.
+    stripped = bytearray(mem)
+    stripped[0x2403:0x2408] = b"\xea" * 5  # blank the init LDX/STX
+    stripped[0x2414:0x2420] = b"\xea" * 12  # blank the play LDX/STX
+    song2 = Song(
+        mem=stripped,
+        load=0x1000,
+        base=0x1001,
+        image_len=0x1420,
+        songs=1,
+        start_song=1,
+        play=play,
+        init=init,
+    )
+    fallback = Player937(song2, 0)
+    assert fallback._reload == 1 and fallback._ms == 1
+
+
+def test_nn937_detector_disjoint_from_resident_nn():
+    """The $937 detector never fires for the plain resident-dispatch $94a body."""
+    from pydmcsid.reader import _nn_wrapper_937
+
+    mem = bytearray(0x10000)
+    mem[0x1000 : 0x1000 + 0x960] = _nn_body()  # no secondary body / no wrapper
+    assert not _nn_wrapper_937(mem, 0x1001, play=0x1003, init=0x1000)
+    # resident vectors -> byte-exact via PlayerNN, not the wrapper path
+    assert pydmcsid.reader.dmc_byte_exact(mem, 0x1001, play=0x1003, init=0x1000)
+
+
+def test_nn937_detector_bounds_safe():
+    """A truncated $937 image cleanly yields no wrapper match, never an IndexError."""
+    from pydmcsid.reader import _nn_wrapper_937
+
+    mem, play, init = _nn937_image()
+    truncated = bytes(mem[:0x1938])  # body opcode present but its operand straddles
+    assert not _nn_wrapper_937(truncated, 0x1001, play, init)  # no IndexError
+    assert not _nn_wrapper_937(mem, 0x1001, play=None, init=init)  # missing vector
+
+
 def test_reject_play_jmp_but_wrong_body():
     """Play JMP targets $85 but the body there is not the DMC play routine."""
     from pydmcsid.reader import find_dmc_base  # local import: internal helper

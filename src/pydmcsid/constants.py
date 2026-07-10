@@ -262,3 +262,27 @@ NN_NOTE_ONSET_REL = 0x318
 NN_NOTE_ONSET_OP = 0x4C  # JMP -- modelled note-onset dispatch
 NN_VIBRATO_REL = 0x58E
 NN_VIBRATO_OP = 0x2C  # BIT -- modelled (no-op'd) vibrato-setup store
+
+# --- $937 appended-wrapper sub-family (CIA multispeed over the $85/$1d body) --
+# ~49 members of the $94a cluster whose PSID header init/play resolve OUTSIDE the
+# resident dispatch, into an appended $2xxx wrapper: a divide-by-N CIA-multispeed
+# divider that, per play call, either JMPs the resident MAIN play (the standard
+# $85/v1d body, once every N calls) or a reorganised SECONDARY dispatch body.  The
+# secondary body sits at ``base+$936`` -- ``LDA flag / BEQ full / JSR refresh`` --
+# and when the enable flag is set it runs the per-voice REFRESH body at
+# ``base+$8f0``: for each voice whose per-phase mask (5-entry tables, phase index
+# advancing mod 5) is nonzero it runs the standard NON-ROW per-voice tick
+# (``$11f9``: note-trigger / sustain), with NO tempo divider, filter-flag reset or
+# filter-register tail.  Both entries drive the SAME modelled body, so playback
+# reuses :class:`~pydmcsid.player.PlayerV1D`; only the per-frame loop differs.
+# Recognised as variant ``nn`` (uniform recognition) and reproduced byte-exact by
+# :class:`~pydmcsid.player.Player937`; detected statically (:func:`_nn_wrapper_937`)
+# so the 157 resident-dispatch ``nn`` tunes + the other engines never regress.
+NN937_BODY_REL = 0x936  # secondary-dispatch body: LDA flag / BEQ / JSR refresh
+NN937_STEADY_REL = 0x8F0  # per-voice refresh body (masked non-row ticks)
+NN937_FLAG = 0x1926  # _a() arg for the enable flag ($1927): refresh vs full play
+NN937_PHASE = 0x1925  # _a() arg for the phase index ($1926), advances mod 5
+NN937_MASK = (0x1927, 0x192C, 0x1931)  # _a() args: per-voice 5-entry phase masks
+NN937_MOD = 5  # phase modulus (CPY #$05 in the refresh body)
+NN937_WRAP_SCAN = 0x20  # bytes of the appended wrapper to scan for its constants
+NN937_DEC_OP = 0xCE  # the wrapper play opens ``DEC counter`` (the multispeed gate)

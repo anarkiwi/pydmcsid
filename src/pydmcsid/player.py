@@ -35,6 +35,7 @@ from pysidtracker.registers import (
 from pydmcsid import constants
 from pydmcsid.reader import (
     Song,
+    _nn_wrapper_937,
     a1_order_table_base,
     n95_order_table_base,
     order_table_base,
@@ -2167,6 +2168,74 @@ class PlayerNN(PlayerV1D):
     """
 
 
+class Player937(PlayerNN):
+    """The ``$937`` CIA-multispeed appended-wrapper sub-family of the ``$94a`` line.
+
+    The PSID header play/init resolve into an appended ``$2xxx`` wrapper, not the
+    resident dispatch: a divide-by-N multispeed divider (``DEC counter`` per play
+    call) that runs the resident MAIN play (the standard init-``$1d`` body, once
+    every N calls) or, on the intermediate calls, a reorganised SECONDARY body.
+    The oracle samples one wrapper call per grid row (no CIA emulation), so
+    :meth:`play_frame` reproduces exactly one wrapper call.
+
+    Both the main and the refresh path drive the same modelled body, so playback
+    inherits :class:`PlayerV1D` wholesale; only the per-frame loop is new.  The
+    refresh path (:data:`constants.NN937_BODY_REL`) runs, for each voice whose
+    per-phase mask is set, the standard NON-ROW per-voice tick (:meth:`_jmp_11f9`),
+    WITHOUT the full play's tempo divider, filter-flag reset or filter-register
+    tail -- so filter sweeps and the tempo advance only step on the main call.
+    """
+
+    def __init__(self, song: Song, subtune: int = 0):
+        super().__init__(song, subtune=subtune)
+        m = self.m
+        # The wrapper (header play/init) is appended past the resident player; its
+        # divider counter cell + reload/seed immediates float with the build, so
+        # they are read from the wrapper code rather than assumed.
+        self._ctr = (m[song.play + 1] | (m[song.play + 2] << 8)) & 0xFFFF
+        self._reload = self._wrap_imm(song.play)  # counter reload (divider period)
+        self._ms = self._wrap_imm(song.init)  # counter seed (from the wrapper init)
+
+    def _wrap_imm(self, lo: int) -> int:
+        """The ``LDX #imm`` seed/reload immediate feeding ``STX counter`` at ``lo``.
+
+        Scans the short wrapper for the ``A2 imm : 8E <counter>`` pair; falls back
+        to 1 (the observed seed) if absent, so a malformed wrapper never raises.
+        """
+        m = self.m
+        hi = min(len(m), lo + constants.NN937_WRAP_SCAN)
+        for i in range(lo, hi - 4):
+            if (
+                m[i] == 0xA2
+                and m[i + 2] == 0x8E
+                and ((m[i + 3] | (m[i + 4] << 8)) & 0xFFFF) == self._ctr
+            ):
+                return m[i + 1]
+        return 1
+
+    def play_frame(self) -> List[Tuple[int, int]]:
+        """Run one wrapper call: the resident main play, or the refresh body."""
+        self._ms = (self._ms - 1) & 0xFF
+        if self._ms != 0:
+            return self._refresh_937()
+        self._ms = self._reload
+        return super().play_frame()
+
+    def _refresh_937(self) -> List[Tuple[int, int]]:
+        m = self.m
+        a = self._a
+        if m[a(constants.NN937_FLAG)] == 0:  # disabled -> the full play runs anyway
+            return super().play_frame()
+        self._writes = []
+        phase = m[a(constants.NN937_PHASE)]
+        for x, mask in enumerate(constants.NN937_MASK):
+            if m[(a(mask) + phase) & 0xFFFF] != 0:
+                self._jmp_11f9(x)
+        phase += 1
+        m[a(constants.NN937_PHASE)] = 0 if phase == constants.NN937_MOD else phase
+        return list(self._writes)
+
+
 def _player_for(song: Song, subtune: int):
     """Instantiate the play body matching ``song``'s DMC generation."""
     variant = song.variant()
@@ -2175,6 +2244,8 @@ def _player_for(song: Song, subtune: int):
     if variant == "n95":
         return Player95(song, subtune=subtune)
     if variant == "nn":
+        if _nn_wrapper_937(song.mem, song.base, song.play, song.init):
+            return Player937(song, subtune=subtune)
         return PlayerNN(song, subtune=subtune)
     if variant == "v1d":
         return PlayerV1D(song, subtune=subtune)

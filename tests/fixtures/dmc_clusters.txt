@@ -45,3 +45,14 @@
 0 MUSICIANS/L/Lyon_Feniks/Digital_Sound_3.sid
 0 MUSICIANS/Z/Zyron/Funk-a-Duck.sid
 0 MUSICIANS/T/Tragic_Error/Ode_to_Gaston.sid
+# $937 CIA-multispeed appended-wrapper sub-family of the $94a line: the PSID
+# header init/play resolve into an appended $2xxx divide-by-6 multispeed wrapper
+# that runs the resident MAIN play (the modelled $1d body) once every 6 calls and
+# a reorganised per-voice REFRESH body (base+$8f0, phase-masked non-row ticks) on
+# the other 5.  Recognised as "nn" and reproduced byte-exact by Player937:
+1 MUSICIANS/P/Psych858o/Dude_with_Attitude.sid
+1 MUSICIANS/P/Psych858o/My_Rusty_Love_C64.sid
+1 MUSICIANS/P/Psych858o/Losing_Control.sid
+# $94a $85-body sub-variant whose note onset writes CTRL inline (STA) instead of
+# the modelled JMP/BIT: recognised as "nn" but NOT reproduced byte-exact:
+0 MUSICIANS/H/Heinmueck/Redable_Rain.sid
