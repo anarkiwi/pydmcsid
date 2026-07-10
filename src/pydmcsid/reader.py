@@ -69,6 +69,55 @@ def find_dmc_base(mem, load: int) -> Optional[int]:
             or _play_body_95_ok(image.mem, play, base)
         ):
             return base
+        nn_base = _nn_engine_base(image.mem, play, base)
+        if nn_base is not None:
+            return nn_base
+    return None
+
+
+def _nn_engine_base(mem, play: int, base: int) -> Optional[int]:
+    """Return the resident engine base for a ``$94a``-family dispatch, or ``None``.
+
+    The ``$94a`` generation interposes a SECOND JMP table between the PSID dispatch
+    and the resident play body (see :data:`constants.DMC_PLAY_NN_REL`): the
+    dispatch play-JMP targets ``base+$94a``, which is itself a ``JMP real_play``
+    into the standard init-``$1d`` (``$85``) body authored at a virtual base
+    (``base+1``..``base+13``).  Follow that second JMP, derive the engine base
+    (``real_play-$85``) and confirm the modelled body sits there.  This only fires
+    when the dispatch play target is a ``JMP`` -- the ``$85``/``$a1``/``$95``
+    generations' play targets are the body itself -- so they are unaffected.
+    """
+    if (play - base) & 0xFFFF != constants.DMC_PLAY_NN_REL:
+        return None
+    if play + 2 >= len(mem) or mem[play] != 0x4C:  # second-level JMP into the body
+        return None
+    real = mem[play + 1] | (mem[play + 2] << 8)
+    eng = (real - constants.DMC_PLAY_BODY_REL) & 0xFFFF
+    if _play_body_ok(mem, real, eng):
+        return eng
+    return None
+
+
+def _nn_table_base(mem, base: int) -> Optional[int]:
+    """Return the ``$94a``-family 2-level dispatch table base for ``base``, or ``None``.
+
+    Self-contained ``(mem, base)`` detector (used by :func:`dmc_variant`): scans
+    just below the engine ``base`` for the PSID JMP table whose play entry
+    (``table+$94a``) is a second ``JMP`` reaching ``base+$85`` (the modelled body).
+    Tightly gated -- both dispatch entries are ``JMP``, the family play offset is
+    exact, the followed target lands on ``base`` and the body validates -- so it
+    never fires for the ``$85``/``$a1``/``$95`` bodies (which carry no such stub).
+    """
+    lo = (base - constants.NN_BASE_SCAN) & 0xFFFF
+    for table in range(lo, base + 1):
+        if table + 5 >= len(mem):
+            continue
+        if mem[table] != 0x4C or mem[table + 3] != 0x4C:  # JMP init / JMP play
+            continue
+        play = mem[table + 4] | (mem[table + 5] << 8)
+        nn = _nn_engine_base(mem, play, table)
+        if nn == base:
+            return table
     return None
 
 
@@ -176,7 +225,7 @@ def order_table_base(mem, base: int) -> Optional[int]:
 
 
 def dmc_variant(mem, base: int) -> Optional[str]:
-    """Return the DMC body generation at ``base`` (``"v37"``/``"v1d"``) or ``None``.
+    """Return the DMC body generation at ``base`` (``v37``/``v1d``/``a1``/``n95``/``nn``).
 
     The two byte-exact generations are distinguished by the first pattern-command
     ``CMP #$xx`` marker operand (``base+$126``): the original init-``$37`` body
@@ -186,8 +235,12 @@ def dmc_variant(mem, base: int) -> Optional[str]:
     recognised DMC of an unmodelled generation (not reproduced byte-exact).
 
     The reorganised ``$a1`` generation (play body at ``base+$a1``, an entirely
-    different work-RAM map) is detected first, by its own body signature.
+    different work-RAM map) is detected first, by its own body signature.  The
+    ``$94a`` family (the init-``$1d`` body behind a 2-level dispatch) is detected
+    by that dispatch stub sitting just below ``base`` (see :func:`_nn_table_base`).
     """
+    if _nn_table_base(mem, base) is not None:
+        return "nn"
     if _a1_body_ok(mem, base):
         return "a1"
     if _n95_body_ok(mem, base):
@@ -440,6 +493,30 @@ def _n95_byte_exact(mem, base: int, play, init) -> bool:
     return n95_order_table_base(mem, base) is not None
 
 
+def _nn_byte_exact(mem, base: int, play, init) -> bool:
+    """Whether the ``$94a``-family body at ``base`` is reproduced byte-exact.
+
+    The reproducible members are the init-``$1d`` (``$85``) body relocated behind
+    the 2-level dispatch, played by :class:`~pydmcsid.player.PlayerNN` at the
+    derived base.  Gated out (recognised, NOT byte-exact) when:
+
+    * the header play/init vectors resolve outside the resident dispatch (an
+      appended multispeed / second-engine wrapper -- these builds drive the
+      reorganised ``base+$937`` steady body instead of the ``$85`` body); or
+    * the note-onset / vibrato-setup encoding is the unmodelled sub-variant (the
+      ``$85`` body whose note trigger writes CTRL inline, ``STA``, in place of the
+      modelled ``JMP``/``BIT`` -- see :data:`constants.NN_NOTE_ONSET_OP`).
+    """
+    win = constants.NN_DISPATCH_WINDOW
+    if play is not None and not base - win <= play < base + win:
+        return False
+    if init is not None and not base - win <= init < base + win:
+        return False
+    if mem[(base + constants.NN_NOTE_ONSET_REL) & 0xFFFF] != constants.NN_NOTE_ONSET_OP:
+        return False
+    return mem[(base + constants.NN_VIBRATO_REL) & 0xFFFF] == constants.NN_VIBRATO_OP
+
+
 def dmc_byte_exact(
     mem, base: int, play: Optional[int] = None, init: Optional[int] = None
 ) -> bool:
@@ -464,6 +541,8 @@ def dmc_byte_exact(
         return _a1_byte_exact(mem, base, play, init)
     if variant == "n95":
         return _n95_byte_exact(mem, base, play, init)
+    if variant == "nn":
+        return _nn_byte_exact(mem, base, play, init)
     if release_clears_adsr(mem, base) is None:  # an unrecognised release edit
         return False
     if variant == "v37":
@@ -497,7 +576,7 @@ class Song:
         return find_dmc_base(self.mem, self.load) is not None
 
     def variant(self) -> Optional[str]:
-        """The DMC body generation (``"v37"``/``"v1d"``) or ``None`` if unmodelled."""
+        """The DMC body generation (``v37``/``v1d``/``a1``/``n95``/``nn``) or ``None``."""
         return dmc_variant(self.mem, self.base)
 
     def byte_exact(self) -> bool:

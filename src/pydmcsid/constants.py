@@ -225,3 +225,40 @@ N95_BODY_SHA256 = "43f32e5705a76585f41e1ad001db15a2c4b244a72a77d92a4900008fceb3d
 # subtune selector or a multispeed divider (play/init far outside) are recognised
 # but gated out.
 N95_DISPATCH_WINDOW = 0x20
+
+# --- $94a family (init-$1d body behind a 2-level PSID dispatch) -------------
+# ~224 HVSC tunes whose PSID JMP table jumps into a SECOND JMP table (the sidid
+# $947/$94a/$937 cluster): dispatch play -> base+$94a, which is itself a
+# ``JMP real_play`` into the standard init-$1d ($85) DMC body -- authored at a
+# VIRTUAL base (base+1..base+13, shifted by the family's longer id/dispatch stub).
+# Following that second JMP and deriving the engine base (real_play-$85) recovers
+# the resident body, which the reader already models (:func:`_play_body_ok`).  So
+# the byte-exact-reproducible members are the init-$1d engine relocated; they are
+# routed to :class:`~pydmcsid.player.PlayerNN` (a thin :class:`PlayerV1D`) at the
+# derived base.  The reader gates them wholly separately (variant ``"nn"``) so the
+# $85/$a1/$95 bodies are unaffected: the 2-level follow only fires when the
+# dispatch play target is itself a ``JMP`` (the other generations' play targets are
+# the body).  Deferred sub-variants (recognised, NOT byte-exact): the appended
+# multispeed/second-engine wrappers that drive the reorganised base+$937 steady
+# body instead of the $85 body, and the $85 sub-variant whose note onset writes
+# CTRL inline (STA) rather than the modelled JMP/BIT form -- see
+# :func:`_nn_byte_exact`.
+DMC_PLAY_NN_REL = 0x94A  # dispatch play-JMP offset from the table base (family sig)
+
+# How far below the derived engine base to scan for the family's 2-level dispatch
+# table (its play entry is the JMP that reaches ``base+$85``).  The virtual-base
+# shift is +1 for almost all builds, +13 for a few whose id/dispatch stub is
+# longer; a $20 window covers both with margin.
+NN_BASE_SCAN = 0x20
+NN_DISPATCH_WINDOW = 0x20  # header play/init resident-window (each side of base)
+
+# Byte-exact discriminators (read from the code, not a whole-body SHA: the $85
+# body embeds the note-freq tables mid-range, so an a1/n95-style linear-walk
+# normalisation desyncs).  The modelled init-$1d body reaches its note onset via a
+# ``JMP`` at base+$318 and no-ops a vibrato-setup store with an illegal ``BIT`` at
+# base+$58e; the unmodelled sub-variant re-encodes both as inline ``STA`` (writes
+# CTRL/vibrato directly), so these two opcodes separate them cleanly.
+NN_NOTE_ONSET_REL = 0x318
+NN_NOTE_ONSET_OP = 0x4C  # JMP -- modelled note-onset dispatch
+NN_VIBRATO_REL = 0x58E
+NN_VIBRATO_OP = 0x2C  # BIT -- modelled (no-op'd) vibrato-setup store

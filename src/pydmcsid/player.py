@@ -2145,6 +2145,28 @@ class Player95:
             m[a(0x1821) + x] = 0xF6
 
 
+class PlayerNN(PlayerV1D):
+    """The ``$94a`` DMC family: the init-``$1d`` (``$85``) body behind a 2-level dispatch.
+
+    The ``$94a`` generation (the sidid ``$947/$94a/$937`` cluster, ~224 HVSC tunes)
+    interposes a SECOND JMP table between the PSID dispatch and the resident play
+    body -- dispatch play ``-> base+$94a -> JMP real_play`` -- and authors the
+    standard init-``$1d`` engine at a VIRTUAL base (``base+1``..``base+13``, shifted
+    by the family's longer id/dispatch stub).  :func:`pydmcsid.reader.find_dmc_base`
+    follows that second JMP and returns the derived engine base, so ``song.base`` is
+    already the virtual base and :class:`PlayerV1D`'s cell derivation + playback
+    reproduce the body unchanged -- this subclass only names the family for routing
+    and the ``$94a`` byte-exact gate (:func:`pydmcsid.reader._nn_byte_exact`).
+
+    Two sub-variants are recognised as this family but deferred (NOT byte-exact, so
+    routed here purely so recognition is uniform): the appended multispeed /
+    second-engine wrapper builds, whose header init/play drive the reorganised
+    ``base+$937`` steady body instead of the ``$85`` body; and the ``$85``
+    sub-variant whose note onset writes CTRL inline (``STA``) rather than the
+    modelled ``JMP``/``BIT`` form.  Both are gated out of the byte-exact claim.
+    """
+
+
 def _player_for(song: Song, subtune: int):
     """Instantiate the play body matching ``song``'s DMC generation."""
     variant = song.variant()
@@ -2152,6 +2174,8 @@ def _player_for(song: Song, subtune: int):
         return PlayerA1(song, subtune=subtune)
     if variant == "n95":
         return Player95(song, subtune=subtune)
+    if variant == "nn":
+        return PlayerNN(song, subtune=subtune)
     if variant == "v1d":
         return PlayerV1D(song, subtune=subtune)
     return Player(song, subtune=subtune)

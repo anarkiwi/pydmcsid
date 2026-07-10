@@ -65,6 +65,15 @@ TUNES = {
         "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
         "I_Love_DMC.grid.txt",
     ),
+    # $94a family (init-$1d $85 body behind a 2-level PSID dispatch, engine
+    # authored at a virtual base): recognised via the dispatch follow and played
+    # byte-exact by PlayerNN (a thin PlayerV1D at the derived base).  Day_Noter +
+    # High_Balance are canonical (virtual base = load+1); Poeci is the longer-stub
+    # layout (virtual base = load+13); 90_Seconds is a second author's build.
+    "day_noter": ("MUSICIANS/G/Glover/Day_Noter.sid", "Day_Noter.grid.txt"),
+    "high_balance": ("MUSICIANS/G/Glover/High_Balance.sid", "High_Balance.grid.txt"),
+    "poeci": ("MUSICIANS/W/Wodnik/Poeci.sid", "Poeci.grid.txt"),
+    "ninety_sec": ("MUSICIANS/P/Psych858o/90_Seconds.sid", "90_Seconds.grid.txt"),
 }
 
 

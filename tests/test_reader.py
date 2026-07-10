@@ -361,6 +361,91 @@ def test_n95_norm_body_straddling_instruction_returns_none():
         pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
 
 
+def _nn_body(note_onset=0x4C, vibrato=0x2C, second_play=0x1086):
+    """A synthetic $94a-family image: a 2-level dispatch into the $85 body.
+
+    The PSID table at $1000 jumps to a SECOND table (play -> $1000+$94a), which is
+    itself a ``JMP second_play`` into the standard $85 DMC body authored at the
+    virtual base $1001 (so ``base_eng = second_play - $85``).  Seeds the play-body
+    tempo anchor (``DEC base_eng+$718``) plus the two byte-exact discriminator
+    opcodes (note-onset $4C / vibrato $2C by default).  Exercises the recognition
+    (dispatch follow, engine-base derivation, $94a byte-exact gate) without
+    embedding the real engine.
+    """
+    base = 0x1001  # virtual engine base (load $1000 + 1)
+    mem = bytearray(0x2000)
+    mem[0x000:0x006] = bytes([0x4C, 0x47, 0x19, 0x4C, 0x4A, 0x19])  # JMP init/play
+    mem[0x94A:0x94D] = bytes(  # second-level play JMP -> the $85 body
+        [0x4C, second_play & 0xFF, (second_play >> 8) & 0xFF]
+    )
+    tempo = (base + 0x718) & 0xFFFF  # DEC base_eng+$718 -- the play-body anchor
+    off = (second_play - 0x1000) & 0xFFFF
+    mem[off : off + 3] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
+    mem[(base + 0x318 - 0x1000) & 0xFFFF] = note_onset  # note-onset discriminator
+    mem[(base + 0x58E - 0x1000) & 0xFFFF] = vibrato  # vibrato-setup discriminator
+    return bytes(mem)
+
+
+def test_nn_body_recognised_byte_exact():
+    """A synthetic $94a 2-level dispatch is recognised as "nn" and byte-exact."""
+    song = pydmcsid.parse(b"\x00\x10" + _nn_body())
+    assert song.is_dmc()
+    assert song.base == 0x1001  # engine base derived from the second-level JMP
+    assert song.variant() == "nn"
+    assert song.byte_exact()  # bare PRG: play/init resident, discriminators modelled
+
+
+def test_nn_wrapped_and_subvariant_not_byte_exact():
+    """$94a byte-exactness gates on resident vectors + the modelled note encoding."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    body = _nn_body()
+    mem = bytearray(0x10000)
+    mem[0x1000 : 0x1000 + len(body)] = body
+    assert dmc_byte_exact(mem, 0x1001, play=0x1003, init=0x1000)  # resident dispatch
+    # An appended multispeed/second-engine wrapper (play/init far outside) drives
+    # the reorganised base+$937 body: recognised as "nn", not byte-exact.
+    assert not dmc_byte_exact(mem, 0x1001, play=0x2411, init=0x23FE)
+
+    # The $85 sub-variant writes CTRL inline (STA $99) at the note onset instead of
+    # the modelled JMP: recognised as "nn", not byte-exact.
+    sub = _nn_body(note_onset=0x99)
+    song = pydmcsid.parse(b"\x00\x10" + sub)
+    assert song.variant() == "nn"
+    assert not song.byte_exact()
+
+
+def test_nn_does_not_misfire_on_base_bodies():
+    """The $94a detector never claims the $85/$a1/$95 synthetic bodies."""
+    from pydmcsid.reader import _nn_table_base
+
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    assert v37.variant() == "v37"
+    assert _nn_table_base(v37.mem, 0x1000) is None
+    v1d = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
+    assert v1d.variant() == "v1d"
+    assert _nn_table_base(v1d.mem, 0x1000) is None
+
+
+def test_nn_dispatch_bounds_safe():
+    """A $94a dispatch whose second-level JMP runs off memory is rejected, not crashed.
+
+    The engine-base follow bounds-checks the second-level target, so a JMP into the
+    top of memory (whose $85 body would straddle the image end) cleanly yields no
+    recognition rather than an ``IndexError`` out of ``read``/``parse``.
+    """
+    from pydmcsid.reader import _nn_engine_base, find_dmc_base
+
+    mem = bytearray(0x10000)
+    base = 0x1000
+    mem[base : base + 6] = bytes([0x4C, 0x47, 0x19, 0x4C, 0x4A, 0x19])
+    mem[base + 0x94A : base + 0x94D] = bytes([0x4C, 0xFF, 0xFF])  # JMP $FFFF
+    assert _nn_engine_base(mem, base + 0x94A, base) is None  # no IndexError
+    assert find_dmc_base(mem, base) is None  # cleanly not recognised
+    with pytest.raises(SidParseError):
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x960]))
+
+
 def test_reject_play_jmp_but_wrong_body():
     """Play JMP targets $85 but the body there is not the DMC play routine."""
     from pydmcsid.reader import find_dmc_base  # local import: internal helper
