@@ -150,8 +150,10 @@ class Song:
     songs: int  # subtune count (PSID header)
     start_song: int  # default subtune (1-based in the header)
     play: int  # header play vector (== base+3 for the standard, unwrapped body)
+    init: int  # header init vector (== base, the JMP dispatch table)
     name: str = ""
     author: str = ""
+    header: Optional[Any] = None  # source PSID/RSID header (None for a bare .prg)
 
     def is_dmc(self) -> bool:
         """Whether the resident binary carries the DMC JMP-table signature."""
@@ -188,11 +190,13 @@ def parse(data: bytes) -> Song:
         name = header.name
         author = header.author
         play = header.play_address
-    else:  # bare .prg: single subtune, no metadata, standard play entry
+        init = header.init_address or base
+    else:  # bare .prg: single subtune, no metadata, standard init/play entries
         songs = 1
         start = 1
         name = author = ""
         play = (base + constants.STD_PLAY_REL) & 0xFFFF
+        init = base
     return Song(
         mem=image.mem,
         load=image.load,
@@ -201,8 +205,10 @@ def parse(data: bytes) -> Song:
         songs=songs,
         start_song=start,
         play=play,
+        init=init,
         name=name,
         author=author,
+        header=header,
     )
 
 
