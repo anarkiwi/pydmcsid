@@ -8,38 +8,32 @@ register grids are committed frozen (``fixtures/*.grid.txt``), framed per VBI
 play call (the DMC framing), so no emulator binary is needed.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+from pysidtracker.testing import make_tune_fixtures
 
 from helpers import TUNES, load_grid
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
-import fetch_tunes  # noqa: E402  (after sys.path tweak)
+CACHE = Path(os.environ.get("DMC_TUNECACHE", str(REPO / "tests" / ".tunecache")))
 
+# id -> HVSC relative path for the byte-exact tunes (helpers pairs each id with a
+# frozen oracle grid).  The byte-exact validation REQUIRES the tune, so an
+# unreachable fetch is a test failure, NOT a skip (``skip_if_unavailable=False``).
+_TUNE_RELPATHS = {tid: rel for tid, (rel, _grid) in TUNES.items()}
 
-@pytest.fixture(params=sorted(TUNES))
-def tune_id(request):
-    """Parametrize over each DMC test tune id."""
-    return request.param
-
-
-@pytest.fixture
-def tune_path(tune_id):
-    """Path to a DMC test tune, FETCHED + CACHED on demand (never skipped).
-
-    The byte-exact validation requires the tune, so it is fetched from the HVSC
-    mirror into the gitignored cache (honouring a local ``$HVSC`` tree) and the
-    test runs for real -- a fetch failure is a test failure, not a skip.
-    """
-    rel, _grid = TUNES[tune_id]
-    return str(fetch_tunes.fetch(rel))
+tune_id, tune_path = make_tune_fixtures(
+    _TUNE_RELPATHS, CACHE, skip_if_unavailable=False
+)
 
 
 @pytest.fixture
-def oracle_grid(tune_id):
+def oracle_grid(tune_id):  # pylint: disable=redefined-outer-name
     """The committed frozen per-call register grid for ``tune_id``."""
     return load_grid(tune_id)
