@@ -35,6 +35,10 @@ TUNES = {
     # AD/SR (an envelope-clearing hard-restart); pydmcsid detects the patch and
     # reproduces it byte-exact.  Stock $37 builds leave AD/SR static here.
     "insider": ("MUSICIANS/W/Willi/Insider_01.sid", "Insider_01.grid.txt"),
+    # Hand-patched init-$1d build: the pw_min shift chain at $124b has its third
+    # LSR overwritten by an illegal 2-byte no-op ($17), so pw_min = inst[2]>>2
+    # (not >>4).  pydmcsid reads the shift from the code and reproduces it.
+    "nop_years": ("MUSICIANS/A/Aomeba/20_Years_of_NOP.sid", "20_Years_of_NOP.grid.txt"),
 }
 
 

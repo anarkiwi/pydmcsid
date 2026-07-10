@@ -213,6 +213,29 @@ def test_release_clears_adsr_stock_clearing_and_unknown():
     assert not unknown.byte_exact()
 
 
+def test_pw_min_shift_stock_and_patched():
+    """``pw_min_shift`` reads the pw_min shift-chain count from the loaded image.
+
+    The stock four-``LSR A`` chain (``4a 4a 4a 4a``) before ``STA $1756,X`` yields
+    ``inst[2]>>4`` (shift 4); a build whose third ``LSR`` is overwritten by the
+    illegal 2-byte no-op ``$17`` (which py65 runs as a 2-byte NOP that eats the
+    following ``LSR``) leaves two ``LSR A`` -> ``inst[2]>>2`` (shift 2).
+    """
+    from pydmcsid.reader import pw_min_shift
+
+    store = bytes([0x9D, 0x56, 0x17])  # STA $1756,X -- terminates the chain
+    m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
+    m[0x24B:0x24F] = bytes([0x4A, 0x4A, 0x4A, 0x4A])  # four LSR A
+    m[0x24F:0x252] = store
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    assert pw_min_shift(stock.mem, stock.base) == 4
+
+    m2 = bytearray(m)
+    m2[0x24D] = 0x17  # third LSR -> illegal 2-byte no-op
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    assert pw_min_shift(patched.mem, patched.base) == 2
+
+
 def test_errors_subclass_pysidtracker():
     """The pydmcsid error hierarchy re-parents onto ``pysidtracker.SidError``."""
     assert issubclass(DmcError, pysidtracker.SidError)

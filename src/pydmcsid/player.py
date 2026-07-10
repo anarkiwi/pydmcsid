@@ -33,7 +33,12 @@ from pysidtracker.registers import (
 )
 
 from pydmcsid import constants
-from pydmcsid.reader import Song, order_table_base, release_clears_adsr
+from pydmcsid.reader import (
+    Song,
+    order_table_base,
+    pw_min_shift,
+    release_clears_adsr,
+)
 
 
 class Player:
@@ -91,6 +96,10 @@ class Player:
         # restart), read from the actual release code -- both generations ship
         # clearing and non-clearing release helpers (see ``release_clears_adsr``).
         self._release_clears_adsr = release_clears_adsr(self.m, song.base) is True
+        # Right-shift forming the PW-sweep min bound ($124b): 4 for the stock
+        # ``inst[2]>>4`` chain, 2 for the ``$17`` no-op-patched build (read from
+        # the code, so hand-patched builds are modelled without regressing stock).
+        self._pw_min_shift = pw_min_shift(self.m, song.base)
         self._setup_cells(operand)
         self.init()
 
@@ -337,7 +346,7 @@ class Player:
         if (flags & 0x04) == 0:
             av = m[self.b_instr + 0x02 + y]
             m[self._a(0x1753) + x] = av & 0x0F
-            hi = (av >> 4) & 0x0F
+            hi = (av >> self._pw_min_shift) & 0xFF
             m[self._a(0x1756) + x] = hi
             m[self._a(0x1759) + x] = hi ^ 0x0F
             m[self._a(0x175F) + x] = (m[self.b_instr + 0x06 + y] >> 4) & 0x0F

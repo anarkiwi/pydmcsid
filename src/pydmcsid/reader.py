@@ -231,6 +231,32 @@ def release_clears_adsr(mem, base: int) -> Optional[bool]:
     return None
 
 
+def pw_min_shift(mem, base: int) -> int:
+    """Right-shift applied to ``inst[2]`` to form the PW-sweep min bound ($124b).
+
+    The stock body computes ``pw_min = inst[2] >> 4`` with four ``LSR A``
+    (``4a 4a 4a 4a``) ahead of the ``STA $1756,X`` store; a hand-patched build
+    overwrites the third ``LSR`` with an illegal 2-byte no-op (``$17``, decoded by
+    py65 as a 2-byte NOP that also consumes the following ``LSR``), leaving two
+    ``LSR A`` -> ``inst[2] >> 2``.  The shift is read from the code -- the count of
+    ``LSR A`` executed before the store -- so both encodings are modelled exactly
+    (the store operand ``$1756`` is fixed work RAM, so the chain sits at a fixed
+    offset).
+    """
+    pc = base + constants.PW_MIN_SHIFT_REL
+    shift = 0
+    for _ in range(8):  # the shift chain is a handful of bytes
+        if pc >= len(mem):
+            break
+        op = mem[pc]
+        if op == constants.PW_MIN_STORE_OP:  # STA $1756,X -- end of the chain
+            break
+        if op == 0x4A:  # LSR A
+            shift += 1
+        pc += _OP_LEN[op]
+    return shift
+
+
 def dmc_byte_exact(mem, base: int, play: Optional[int] = None) -> bool:
     """True if the body at ``base`` is a generation pydmcsid plays byte-exact.
 
