@@ -46,10 +46,15 @@ the `$85` anchor so the base engine is provably unaffected:
   a virtual base `load+1` or `load+13`), so it reuses `PlayerV1D` at the derived
   base rather than a separate transcription.
 
-Across HVSC (sidid `DMC` family) it recognises 9902 of 10759 tunes, 9534 of them
-reproduced byte-exact (v37 2903, v1d 4818, `$a1` 1184, `$95` 472, `$94a` 157).
-Still unmodeled: the `DMC_V6.x` `$50`/`$7b` vector and the reorganised `base+$937`
-steady body used by the appended-wrapper minority of the `$94a` cluster.
+Across HVSC (sidid `DMC` family) it recognises 9902 of 10759 tunes, 9702 of them
+reproduced byte-exact (v37 2903, v1d 4925, `$a1` 1196, `$95` 472, `$94a` 206).
+The byte-exact gate follows a benign play-wrapper (a thunk that JMPs into the
+standard entry) rather than deferring on `play != base+3`, and reads hand-patched
+onset / `$D418`-tail edits from the code so those builds reproduce too. Still
+unmodeled: the `DMC_V6.x` `$50`/`$7b` vector; the `base+$937` inline-CTRL
+note-onset sub-variant of the `$94a` cluster; and a long tail of distinct
+single-tune scene micro-patches (a residual &lt;1% of the claimed v37/v1d set is
+gated as byte-exact but diverges on unmodeled per-tune edits).
 
 ## Data model
 
