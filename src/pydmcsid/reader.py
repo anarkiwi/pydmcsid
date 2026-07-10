@@ -140,6 +140,97 @@ def _v1d_layout_ok(mem, base: int) -> bool:
     )
 
 
+# 6502 instruction lengths by opcode (1/2/3 bytes), for the short linear walk of
+# a release helper up to its ``RTS`` (validated against py65 for all legal
+# opcodes).  Undefined/illegal opcodes default to the legal opcode sharing their
+# column's addressing mode, which is enough to keep the tiny-helper walk aligned.
+_OP_LEN = bytes.fromhex(
+    "0102010202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0302010202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0102010202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0102010202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0202020202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0202020202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0202020202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+    "0202020202020202"
+    "0102010203030303"
+    "0202010202020202"
+    "0103010303030303"
+)
+
+
+def _helper_zeros_adsr(mem, addr: int) -> bool:
+    """True if the tiny release helper at ``addr`` stores to BOTH ``$D405,Y`` and
+    ``$D406,Y`` (``99 05/06 D4``) before its first ``RTS`` -- i.e. zeroes AD/SR.
+
+    A linear walk (helpers are straight-line) that stops at ``RTS``; this rejects
+    the ``STA $100f,X : RTS`` no-clear helper whose image happens to be followed
+    by unrelated ``STA $D405/$D406`` bytes past the ``RTS``.
+    """
+    seen_ad = seen_sr = False
+    pc = addr
+    for _ in range(24):  # release helpers are a handful of instructions
+        if pc + 2 >= len(mem):
+            break
+        op = mem[pc]
+        if op == 0x60:  # RTS -- end of the helper
+            break
+        if op == 0x99:  # STA abs,Y
+            operand = mem[pc + 1] | (mem[pc + 2] << 8)
+            seen_ad |= operand == 0xD405
+            seen_sr |= operand == 0xD406
+        pc += _OP_LEN[op]
+    return seen_ad and seen_sr
+
+
+def release_clears_adsr(mem, base: int) -> Optional[bool]:
+    """Whether the note-release (``base+$33d``) also zeroes AD/SR, or ``None``.
+
+    The release gate-off is either an inline store or a ``JSR`` to a small helper,
+    and either form may or may not zero AD/SR (an envelope-clearing hard-restart).
+    Both DMC generations ship both variants, so the behaviour is read from the
+    code rather than assumed per generation:
+
+    * inline ``STA $100f,X`` (opcode ``$9D``) -- the stock ``$37`` gate-off, AD/SR
+      left static -> ``False``.
+    * ``JSR`` (opcode ``$20``) to a helper -- follow it: ``True`` if the helper
+      stores ``$D405,Y``/``$D406,Y`` before ``RTS`` (the ``$1d`` ``$17ec`` clear,
+      or a ``$37`` scene edit), else ``False`` (a bare ``STA $100f,X : RTS``).
+    * any other opcode -- an unrecognised release edit -> ``None`` (recognised
+      but not reproduced byte-exact).
+    """
+    site = base + constants.V37_RELEASE_SITE_REL
+    if site + 2 >= len(mem):
+        return False
+    op = mem[site]
+    if op == 0x9D:  # STA $100f,X -- stock inline gate-off store
+        return False
+    if op == 0x20:  # JSR <helper>
+        return _helper_zeros_adsr(mem, mem[site + 1] | (mem[site + 2] << 8))
+    return None
+
+
 def dmc_byte_exact(mem, base: int, play: Optional[int] = None) -> bool:
     """True if the body at ``base`` is a generation pydmcsid plays byte-exact.
 
@@ -149,10 +240,14 @@ def dmc_byte_exact(mem, base: int, play: Optional[int] = None) -> bool:
     entry (``play != base+3``) or relocate the AD/SR write out of the modelled
     ``$184B`` helper -- these are recognised as ``$1d`` but not reproduced
     byte-exact, so they are gated out here (``play`` is the header play vector;
-    ``None`` skips the wrapper check, e.g. for a bare PRG with no header).
+    ``None`` skips the wrapper check, e.g. for a bare PRG with no header).  An
+    init-``$37`` build whose release is patched to an unrecognised routine (see
+    :func:`v37_release_mode`) is likewise recognised but not byte-exact.
     """
     variant = dmc_variant(mem, base)
     if variant is None:
+        return False
+    if release_clears_adsr(mem, base) is None:  # an unrecognised release edit
         return False
     if variant == "v37":
         return True

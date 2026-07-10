@@ -54,7 +54,7 @@ def _dmc_body(base, init_rel=0x1D, marker=0xFE):
     ``base+$126`` ($FE = byte-exact generation, $7E = later generation).
     """
     body = bytearray(_dmc_jmp_table(base, init_rel))
-    body += b"\x00" * (0x300 - len(body))
+    body += b"\x00" * (0x400 - len(body))
     tempo = (base + 0x718) & 0xFFFF
     body[0x85:0x88] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
     body[0x126] = marker
@@ -70,6 +70,10 @@ def _dmc_body(base, init_rel=0x1D, marker=0xFE):
         body[off : off + 2] = bytes([tgt & 0xFF, (tgt >> 8) & 0xFF])
     body[0x180] = 0x4C
     body[0x230] = 0x20
+    # Stock $37 release: the inline gate-off store ``STA $100f,X`` at $133d (a
+    # patched ``JSR`` there marks a scene hard-restart edit; see v37_release_mode).
+    gate = (base + 0x0F) & 0xFFFF
+    body[0x33D:0x340] = bytes([0x9D, gate & 0xFF, (gate >> 8) & 0xFF])
     return bytes(body)
 
 
@@ -158,6 +162,55 @@ def test_dmc_byte_exact_out_of_range():
     from pydmcsid.reader import dmc_byte_exact
 
     assert dmc_byte_exact(bytearray(16), 0x0) is False
+
+
+def _put_release(body, base, jsr_target=None, adsr_clear=True):
+    """Patch the $133d release site: stock store, or a JSR to a mod routine."""
+    if jsr_target is None:  # stock inline gate-off store
+        gate = (base + 0x0F) & 0xFFFF
+        body[0x33D:0x340] = bytes([0x9D, gate & 0xFF, (gate >> 8) & 0xFF])
+        return
+    body[0x33D:0x340] = bytes([0x20, jsr_target & 0xFF, (jsr_target >> 8) & 0xFF])
+    off = jsr_target - base
+    clear = bytes([0xA9, 0x00, 0x99, 0x05, 0xD4, 0x99, 0x06, 0xD4])  # LDA #0;AD/SR=0
+    if adsr_clear:  # STA mask; LDY stride; clear AD/SR; RTS
+        routine = bytes([0x9D, 0x0F, 0x10, 0xBC, 0x0D, 0x17]) + clear + b"\x60"
+    else:  # bare STA mask; RTS -- then DEAD AD/SR stores past the RTS (Coool shape)
+        routine = bytes([0x9D, 0x0F, 0x10, 0x60, 0xBC, 0x0D, 0x17]) + clear + b"\x60"
+    body[off : off + len(routine)] = routine
+
+
+def test_release_clears_adsr_stock_clearing_and_unknown():
+    """``release_clears_adsr`` reads the $133d release from the loaded image.
+
+    A ``JSR`` whose helper stores ``$D405``/``$D406`` before ``RTS`` clears AD/SR
+    (True); the bare ``STA $100f,X : RTS`` helper does not (False) even though its
+    image is followed by unrelated ``STA $D405/$D406`` bytes past the ``RTS``; the
+    inline stock store does not clear (False); a malformed release is ``None``.
+    """
+    from pydmcsid.reader import release_clears_adsr
+
+    stock = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    assert release_clears_adsr(stock.mem, stock.base) is False
+    assert stock.byte_exact()
+
+    m = bytearray(_dmc_body(0x1000, init_rel=0x37))
+    _put_release(m, 0x1000, jsr_target=0x1018, adsr_clear=True)
+    clearing = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    assert release_clears_adsr(clearing.mem, clearing.base) is True
+    assert clearing.byte_exact()
+
+    m2 = bytearray(_dmc_body(0x1000, init_rel=0x37))
+    _put_release(m2, 0x1000, jsr_target=0x1018, adsr_clear=False)
+    noclear = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    assert release_clears_adsr(noclear.mem, noclear.base) is False
+    assert noclear.byte_exact()
+
+    m3 = bytearray(_dmc_body(0x1000, init_rel=0x37))
+    m3[0x33D] = 0xEA  # a NOP -- neither the inline store nor a JSR helper
+    unknown = pydmcsid.parse(b"\x00\x10" + bytes(m3))
+    assert release_clears_adsr(unknown.mem, unknown.base) is None
+    assert not unknown.byte_exact()
 
 
 def test_errors_subclass_pysidtracker():

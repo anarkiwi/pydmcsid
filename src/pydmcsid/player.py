@@ -33,7 +33,7 @@ from pysidtracker.registers import (
 )
 
 from pydmcsid import constants
-from pydmcsid.reader import Song, order_table_base
+from pydmcsid.reader import Song, order_table_base, release_clears_adsr
 
 
 class Player:
@@ -87,6 +87,10 @@ class Player:
         self.b_filt_step_lo = operand(constants.FILT_STEP_LO_OP)
         self.b_filt_step_hi = operand(constants.FILT_STEP_HI_OP)
         self.b_vibseed = operand(self.vib_seed_op) if self.vib_seed_op else 0
+        # Whether the note-release also zeroes AD/SR (an envelope-clearing hard-
+        # restart), read from the actual release code -- both generations ship
+        # clearing and non-clearing release helpers (see ``release_clears_adsr``).
+        self._release_clears_adsr = release_clears_adsr(self.m, song.base) is True
         self._setup_cells(operand)
         self.init()
 
@@ -418,8 +422,19 @@ class Player:
         self._tick_134e(x)
 
     def _release_gate(self, x: int) -> None:
-        """Gate-off on a note's last frame ($133B): force the gate mask to $FE."""
-        self.m[self._a(0x100F) + x] = 0xFE
+        """Gate-off on a note's last frame ($133B): force the gate mask to $FE.
+
+        The release also zeroes AD/SR when the build's release helper does (an
+        envelope-clearing hard-restart) -- read from the code, since both DMC
+        generations ship clearing and non-clearing releases (see
+        :func:`~pydmcsid.reader.release_clears_adsr`).
+        """
+        m = self.m
+        m[self._a(0x100F) + x] = 0xFE
+        if self._release_clears_adsr:
+            yv = m[self._a(0x170D) + x]
+            self.w(SID_BASE + 5 + yv, 0)
+            self.w(SID_BASE + 6 + yv, 0)
 
     # -- 16-bit PW sweep ($134E) -----------------------------------------
     def _tick_134e(self, x: int) -> None:
@@ -843,13 +858,8 @@ class PlayerV1D(Player):
             return
         self._output_1591(x)
 
-    def _release_gate(self, x: int) -> None:
-        # $133B release goes via the $17EC helper: gate mask $FE AND AD/SR = 0.
-        m = self.m
-        m[self._a(0x100F) + x] = 0xFE
-        yv = m[self._a(0x170D) + x]
-        self.w(SID_BASE + 5 + yv, 0)
-        self.w(SID_BASE + 6 + yv, 0)
+    # $133B release ($17EC helper: gate mask $FE, and AD/SR=0 when the helper
+    # clears them) is generation-agnostic -- inherited from ``Player``.
 
     # -- vibrato depth ramp ($1567): doubles the vib period --------------
     def _t1567(self, x: int) -> None:

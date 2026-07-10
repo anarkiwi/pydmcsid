@@ -31,6 +31,10 @@ TUNES = {
     # play entry shifted out of the id-string region, engine unchanged at
     # base+$b0.  Recognised + played byte-exact by the generalised anchor.
     "kordiaukis": ("DEMOS/G-L/Kordiaukis_Mix.sid", "Kordiaukis_Mix.grid.txt"),
+    # Scene-modified init-$37 build: the $133d release is patched to also zero
+    # AD/SR (an envelope-clearing hard-restart); pydmcsid detects the patch and
+    # reproduces it byte-exact.  Stock $37 builds leave AD/SR static here.
+    "insider": ("MUSICIANS/W/Willi/Insider_01.sid", "Insider_01.grid.txt"),
 }
 
 

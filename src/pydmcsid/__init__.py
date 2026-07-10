@@ -10,6 +10,7 @@ from pydmcsid.reader import (
     find_dmc_base,
     parse,
     read,
+    release_clears_adsr,
 )
 from pydmcsid.reglog import RegWrite, iter_register_writes
 from pydmcsid.writer import image_bytes, to_prg, to_sid, write
@@ -33,6 +34,7 @@ __all__ = [
     "iter_register_writes",
     "parse",
     "read",
+    "release_clears_adsr",
     "to_prg",
     "to_sid",
     "write",

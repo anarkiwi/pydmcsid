@@ -105,6 +105,11 @@ BURST_IMM_REL = 0x30B
 # or relocate the AD/SR write out of the modelled $184B helper.  These are
 # recognised as the $1d generation but NOT reproduced byte-exact, so they are
 # gated out of the byte-exact claim.
+# Release gate-off site ($133d): inline ``STA $100f,X`` ($9D, $37 stock, AD/SR
+# static) or ``JSR`` ($20) a helper that may also zero AD/SR (the $1d $17ec
+# clear, or a $37 scene edit).  See ``reader.release_clears_adsr``.
+V37_RELEASE_SITE_REL = 0x33D
+
 STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
 INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
 INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)
