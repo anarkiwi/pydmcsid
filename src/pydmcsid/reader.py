@@ -5,6 +5,7 @@ resident, and the song tables are relocated into it).  :func:`read` loads the C6
 memory image and its load address; the player walks the resident tables directly.
 """
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -61,9 +62,27 @@ def find_dmc_base(mem, load: int) -> Optional[int]:
     end = min(load + constants.DMC_TABLE_SCAN, len(mem))
     for match in find_code_all(image, _DMC_DISPATCH, start=load, end=end):
         base = match.addr
-        if _play_body_ok(image.mem, match.captures["play"], base):
+        play = match.captures["play"]
+        if _play_body_ok(image.mem, play, base) or _play_body_a1_ok(
+            image.mem, play, base
+        ):
             return base
     return None
+
+
+def _play_body_a1_ok(mem, play: int, base: int) -> bool:
+    """True if the play routine is the reorganised ``$a1`` engine body.
+
+    The ``$a1`` generation (see :func:`_a1_body_ok`) dispatches play to
+    ``base+$a1`` (not ``base+$85``) and has an entirely different work-RAM map, so
+    it is recognised by a separate anchor: the dispatch play-JMP target is exactly
+    ``base+$a1`` and the body there matches the family signature.  This never
+    fires for the ``base+$85`` body (whose play target is elsewhere), so the
+    existing generations are unaffected.
+    """
+    if play != (base + constants.DMC_PLAY_A1_REL) & 0xFFFF:
+        return False
+    return _a1_body_ok(mem, base)
 
 
 def order_table_base(mem, base: int) -> Optional[int]:
@@ -95,7 +114,12 @@ def dmc_variant(mem, base: int) -> Optional[str]:
     body re-encodes them as ``$7e/$7d/$7f`` (``CMP #$7e``) and restructures note
     setup / adds a volume + legato command.  A body whose marker is neither is a
     recognised DMC of an unmodelled generation (not reproduced byte-exact).
+
+    The reorganised ``$a1`` generation (play body at ``base+$a1``, an entirely
+    different work-RAM map) is detected first, by its own body signature.
     """
+    if _a1_body_ok(mem, base):
+        return "a1"
     idx = base + constants.DMC_MARKER_OP_REL
     if idx >= len(mem):
         return None
@@ -257,22 +281,100 @@ def pw_min_shift(mem, base: int) -> int:
     return shift
 
 
-def dmc_byte_exact(mem, base: int, play: Optional[int] = None) -> bool:
+def _norm_a1_body(mem, base: int) -> Optional[bytes]:
+    """The ``$a1`` play body ($a1..$70e) with per-tune bytes zeroed, or ``None``.
+
+    Zeroes the operand of every 3-byte instruction whose target lies in the
+    per-tune data region (``>= base+$846``) plus the two patchable release
+    opcodes, leaving only the load-invariant engine opcodes -- identical across
+    the whole family.  Walking with :data:`_OP_LEN` keeps the operand positions
+    aligned; a non-family body normalises differently and fails the hash.
+    """
+    hi = base + constants.A1_BODY_HI
+    if hi > len(mem):
+        return None
+    out = bytearray(mem[base + constants.A1_BODY_LO : hi])
+    pc = constants.A1_BODY_LO
+    while pc < constants.A1_BODY_HI:
+        op = mem[base + pc]
+        length = _OP_LEN[op]
+        if pc + length > constants.A1_BODY_HI:  # instr straddles the body end:
+            return None  # walk desynced from the canonical layout -- not a match
+        if length == 3:
+            operand = mem[base + pc + 1] | (mem[base + pc + 2] << 8)
+            if ((operand - base) & 0xFFFF) >= constants.A1_DATA_REL:
+                out[pc - constants.A1_BODY_LO + 1] = 0
+                out[pc - constants.A1_BODY_LO + 2] = 0
+        pc += length
+    out[constants.A1_REL_SR_CLEAR_REL - constants.A1_BODY_LO] = 0
+    out[constants.A1_REL_GATE_REL - constants.A1_BODY_LO] = 0
+    return bytes(out)
+
+
+def _a1_body_ok(mem, base: int) -> bool:
+    """True if ``base+$a1`` carries the modelled ``$a1`` engine body signature."""
+    body = _norm_a1_body(mem, base)
+    if body is None:
+        return False
+    return hashlib.sha256(body).hexdigest() == constants.A1_BODY_SHA256
+
+
+def a1_order_table_base(mem, base: int) -> Optional[int]:
+    """Return the ``$a1`` per-subtune orderlist pointer-table base, or ``None``.
+
+    Read from the init copy ``LDA <ordertable>,Y : STA $17cf,X`` (the store
+    ``9D`` to ``base+$17cf``, low byte of the per-voice orderlist-ptr array),
+    which locates it whatever the init layout (the init region floats with the
+    id-string, and some builds relocate it wholesale past the data)."""
+    store_addr = (base + constants.A1_ORDER_STORE_REL - 0x1000) & 0xFFFF
+    sig = bytes((0x9D, store_addr & 0xFF, store_addr >> 8))
+    idx = mem.find(sig, base, min(len(mem), base + 0x2000))
+    if idx >= 3 and mem[idx - 3] == 0xB9:
+        return mem[idx - 2] | (mem[idx - 1] << 8)
+    return None
+
+
+def _a1_byte_exact(mem, base: int, play, init) -> bool:
+    """Whether the ``$a1`` body at ``base`` is reproduced byte-exact.
+
+    Gated out (recognised but not byte-exact) when the header init/play vectors
+    resolve outside the resident player (a self-modifying subtune selector or a
+    multispeed divider wrapper), when a patchable release store carries an
+    unmodelled opcode, or when the orderlist-table anchor is missing."""
+    win = constants.A1_DISPATCH_WINDOW
+    if play is not None and not base <= play < base + win:
+        return False
+    if init is not None and not base <= init < base + win:
+        return False
+    if mem[base + constants.A1_REL_SR_CLEAR_REL] not in (0x99, 0x2C):
+        return False
+    if mem[base + constants.A1_REL_GATE_REL] not in (0x9D, 0x2C):
+        return False
+    return a1_order_table_base(mem, base) is not None
+
+
+def dmc_byte_exact(
+    mem, base: int, play: Optional[int] = None, init: Optional[int] = None
+) -> bool:
     """True if the body at ``base`` is a generation pydmcsid plays byte-exact.
 
-    True for the init-``$37`` generation and the modelled init-``$1d`` bodies;
-    False for a recognised DMC of an unmodelled generation.  A handful of
-    hand-customized init-``$1d`` builds share the marker+layout but wrap the play
-    entry (``play != base+3``) or relocate the AD/SR write out of the modelled
-    ``$184B`` helper -- these are recognised as ``$1d`` but not reproduced
-    byte-exact, so they are gated out here (``play`` is the header play vector;
-    ``None`` skips the wrapper check, e.g. for a bare PRG with no header).  An
-    init-``$37`` build whose release is patched to an unrecognised routine (see
-    :func:`v37_release_mode`) is likewise recognised but not byte-exact.
+    True for the init-``$37`` generation, the modelled init-``$1d`` bodies and the
+    reorganised ``$a1`` engine; False for a recognised DMC of an unmodelled
+    generation.  A handful of hand-customized init-``$1d`` builds share the
+    marker+layout but wrap the play entry (``play != base+3``) or relocate the
+    AD/SR write out of the modelled ``$184B`` helper -- these are recognised as
+    ``$1d`` but not reproduced byte-exact, so they are gated out here (``play`` is
+    the header play vector; ``None`` skips the wrapper check, e.g. for a bare PRG
+    with no header).  An init-``$37`` build whose release is patched to an
+    unrecognised routine is likewise recognised but not byte-exact.  A ``$a1``
+    build wrapped by a subtune selector / multispeed divider (``init``/``play``
+    resolve outside the player) is gated out too.
     """
     variant = dmc_variant(mem, base)
     if variant is None:
         return False
+    if variant == "a1":
+        return _a1_byte_exact(mem, base, play, init)
     if release_clears_adsr(mem, base) is None:  # an unrecognised release edit
         return False
     if variant == "v37":
@@ -317,7 +419,7 @@ class Song:
         wraps the play entry / relocates the AD/SR helper.  See
         :func:`dmc_byte_exact`.
         """
-        return dmc_byte_exact(self.mem, self.base, self.play)
+        return dmc_byte_exact(self.mem, self.base, self.play, self.init)
 
 
 def parse(data: bytes) -> Song:

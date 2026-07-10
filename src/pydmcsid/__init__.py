@@ -1,7 +1,7 @@
 """Read and play DMC (Demo Music Creator) SID tunes (pure-Python)."""
 
 from pydmcsid.errors import DmcError, SidParseError
-from pydmcsid.player import Player, PlayerV1D, iter_frames
+from pydmcsid.player import Player, PlayerA1, PlayerV1D, iter_frames
 from pydmcsid.reader import (
     DmcSidParser,
     Song,
@@ -21,6 +21,7 @@ __all__ = [
     "DmcError",
     "DmcSidParser",
     "Player",
+    "PlayerA1",
     "PlayerV1D",
     "RegWrite",
     "SidParseError",

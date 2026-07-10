@@ -135,8 +135,10 @@ def test_unmodelled_generation_recognised_not_byte_exact():
 
 
 def test_reorganised_body_rejected():
-    """A build whose play offset is NOT $85 (a different body) is rejected."""
-    # init/play JMP table but play targets base+$a1 (the sidid 40/a1 cluster).
+    """A play->base+$a1 dispatch whose body is NOT the $a1 signature is rejected."""
+    # init/play JMP table but play targets base+$a1 (the sidid 40/a1 cluster) with
+    # an all-zero body: the $a1 anchor requires the family body signature, so this
+    # neither matches the $85 body nor the $a1 body and is not a DMC.
     tbl = bytearray()
     for rel in (0x40, 0xA1):
         tgt = 0x1000 + rel
@@ -144,6 +146,111 @@ def test_reorganised_body_rejected():
     prg = b"\x00\x10" + bytes(tbl) + b"\x00" * 0x300
     with pytest.raises(SidParseError):
         pydmcsid.parse(prg)
+
+
+def _a1_body(base, sr_clear=0x99, gate=0x9D, order_tbl=0x1900):
+    """A synthetic $a1 body: dispatch (play->base+$a1) + the family fixtures.
+
+    Fills the play body ($a1..$70e) with NOPs plus one per-tune-data operand
+    (wildcarded by the signature) and the two patchable release stores, and seeds
+    the init order-table copy ``LDA <order>,Y : STA $17cf,X`` store site.  The
+    caller monkeypatches ``constants.A1_BODY_SHA256`` to this body's normalised
+    hash, so the recognition machinery (dispatch scan, $a1 play offset, body
+    normalisation + hash, order-table read) is exercised without embedding the
+    real engine bytes.
+    """
+    from pydmcsid import constants
+
+    del base  # bodies are authored load-relative to $1000
+    mem = bytearray(0x2000)
+    mem[0:6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0xA1, 0x10])  # play JMP -> base+$a1
+    # init order-table copy store site: B9 <order,Y> : 9D CF 17 (STA $17cf,X)
+    mem[0x46:0x4C] = bytes([0xB9, order_tbl & 0xFF, order_tbl >> 8, 0x9D, 0xCF, 0x17])
+    for off in range(0xA1, 0x70F):  # NOP-fill the play body
+        mem[off] = 0xEA
+    mem[0xA1:0xA4] = bytes([0xAD, 0x00, 0x19])  # LDA $1900: a per-tune-data operand
+    mem[constants.A1_REL_SR_CLEAR_REL] = sr_clear  # release SR-clear opcode
+    mem[constants.A1_REL_GATE_REL] = gate  # release gate-mask opcode
+    return bytes(mem)
+
+
+def _a1_hash(body):
+    import hashlib
+
+    from pydmcsid.reader import _norm_a1_body
+
+    img = bytearray(0x10000)
+    img[0x1000 : 0x1000 + len(body)] = body  # body is load-relative to $1000
+    return hashlib.sha256(_norm_a1_body(img, 0x1000)).hexdigest()
+
+
+def test_a1_body_recognised_byte_exact(monkeypatch):
+    """A synthetic $a1 body is recognised as variant "a1" and played byte-exact."""
+    from pydmcsid import constants
+
+    body = _a1_body(0x1000)
+    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body))
+    song = pydmcsid.parse(b"\x00\x10" + body)
+    assert song.is_dmc()
+    assert song.base == 0x1000
+    assert song.variant() == "a1"
+    assert song.byte_exact()  # bare PRG: init/play at base, patches modelled
+
+
+def test_a1_release_patch_and_order_gate(monkeypatch):
+    """$a1 byte-exactness gates on the release patch opcodes + order-table anchor."""
+    from pydmcsid import constants
+    from pydmcsid.reader import a1_order_table_base, dmc_byte_exact
+
+    body = _a1_body(0x1000, order_tbl=0x1888)
+    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body))
+    song = pydmcsid.parse(b"\x00\x10" + body)
+    assert a1_order_table_base(song.mem, 0x1000) == 0x1888  # read from store site
+    assert song.byte_exact()
+
+    # An unmodelled opcode at the release SR-clear site is recognised, not exact.
+    body2 = _a1_body(0x1000, sr_clear=0xEA)
+    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body2))
+    song2 = pydmcsid.parse(b"\x00\x10" + body2)
+    assert song2.variant() == "a1"
+    assert not song2.byte_exact()
+
+    # A wrapped play vector (outside the player) is recognised, not byte-exact.
+    assert not dmc_byte_exact(song.mem, 0x1000, play=0x2D93, init=0x1000)
+
+
+def test_a1_does_not_misfire_on_base_body(monkeypatch):
+    """The $a1 detector never claims the $85 (v37/v1d) synthetic bodies."""
+    from pydmcsid import constants
+    from pydmcsid.reader import _a1_body_ok
+
+    # Even with the $a1 hash active, a $85 body is not an $a1 body.
+    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(_a1_body(0x1000)))
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    assert v37.variant() == "v37"
+    assert not _a1_body_ok(v37.mem, 0x1000)
+
+
+def test_a1_norm_body_straddling_instruction_returns_none():
+    """A body whose opcode walk straddles the body end is rejected, not crashed.
+
+    When a 3-byte instruction begins in the last two bytes of the play-body window
+    the ``_OP_LEN`` walk would index past the normalised buffer; the normaliser
+    must return ``None`` (a non-family body) rather than raise.  Recognition then
+    cleanly rejects the image instead of propagating an ``IndexError`` out of
+    ``read``/``parse``.
+    """
+    from pydmcsid.reader import _norm_a1_body, find_dmc_base
+
+    mem = bytearray(0x10000)
+    base = 0x1000
+    mem[base : base + 6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0xA1, 0x10])  # play->$a1
+    for off in range(base + 0xA1, base + 0x70F):  # JMP-abs (3-byte) fill: straddles
+        mem[off] = 0x4C
+    assert _norm_a1_body(mem, base) is None  # no IndexError
+    assert find_dmc_base(mem, base) is None  # cleanly not recognised
+    with pytest.raises(SidParseError):
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
 
 
 def test_reject_play_jmp_but_wrong_body():

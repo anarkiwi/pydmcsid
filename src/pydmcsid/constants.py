@@ -120,6 +120,54 @@ PW_MIN_SHIFT_REL = 0x24B  # first ``LSR A`` of the pw_min shift chain
 PW_MIN_STORE_OP = 0x9D  # STA $1756,X -- terminates the shift chain
 PW_MIN_SHIFT_STD = 4  # stock shift (four ``LSR A``)
 
+# --- $a1 engine (V5-era reorganised player body) ---------------------------
+# A genuinely different DMC generation: the play body sits at ``base+$a1`` (the
+# dispatch play-JMP target) with a reorganised work-RAM map and a richer feature
+# set (global filter cutoff sweep, volume fade, per-voice PW/vibrato/slide
+# wavetables).  Recognised + reproduced byte-exact by ``PlayerA1``; gated wholly
+# separately from the ``base+$85`` body so the v37/v1d engines are unchanged.
+DMC_PLAY_A1_REL = 0xA1  # play-body offset from base for the $a1 engine
+
+# Play-body operand offsets (rel to base): per-tune table bases, read from the
+# ``LDA <table>,Y`` operands the same way the base engine reads its tables.  The
+# instruction opcodes are identical across the family; only these operands (and
+# the two patchable release stores below) vary per tune (the data tables
+# relocate as the song size changes).
+A1_PATTERN_LO_OP = 0x14F  # LDA <patptr_lo>,Y @ $114e
+A1_PATTERN_HI_OP = 0x154  # LDA <patptr_hi>,Y @ $1153
+A1_INST_OP = 0x2CC  # LDA <instruments>,Y @ $12cb (8-byte records)
+A1_WT_CTRL_OP = 0x386  # LDA <wavetable ctrl>,Y @ $1385
+A1_WT_ARG_OP = 0x390  # LDA <wavetable arg>,Y @ $138f
+A1_PW_A_OP = 0x3C1  # LDA <pw hi/step>,Y @ $13c0
+A1_PW_B_OP = 0x3C7  # LDA <pw lo/step>,Y @ $13c6
+A1_FILT_A_OP = 0x3F0  # LDA <filter hi/step>,Y @ $13ef
+A1_FILT_B_OP = 0x3F6  # LDA <filter lo/step>,Y @ $13f5
+A1_FREQ_LO_REL = 0x70F  # note->freq lo table (fixed: right after the code)
+A1_FREQ_HI_REL = 0x76F  # note->freq hi table (fixed)
+A1_ORDER_STORE_REL = 0x17CF  # init copies orderlist ptr lo to $17cf,X
+
+# Per-build patchable release stores: a scene edit may overwrite the store with
+# an illegal 3-byte ``BIT`` no-op ($2c) to disable it (the analog of
+# ``release_clears_adsr`` in the base engine), so the behaviour is read from the
+# opcode rather than assumed.
+A1_REL_SR_CLEAR_REL = 0x6C7  # STA $d406,Y ($99) / BIT ($2c): release SR clear
+A1_REL_GATE_REL = 0x6E3  # STA $1817,X ($9d) / BIT ($2c): release gate-off mask
+
+# Body signature: sha256 of the play body ($a1..$70e) with the per-tune table
+# operands (any 3-byte instruction operand ``>= base+$846``, the per-tune data
+# region) and the two patchable release opcodes zeroed.  All 1198 family tunes
+# share this exact normalised body; it rejects both the unrelated engine that
+# also dispatches play to ``base+$a1`` and the reorganised-wavetable sub-variant.
+A1_BODY_LO = 0xA1
+A1_BODY_HI = 0x70F
+A1_DATA_REL = 0x846  # per-tune data starts here; operands >= this are wildcarded
+A1_BODY_SHA256 = "fad9e7f9195f89dfce507681a9ee54fbec44507d5295e8e2e2d899834670914c"
+
+# The header init/play vectors must resolve into the resident player (within this
+# window of the base) for byte-exact playback; builds wrapped by a self-modifying
+# subtune selector or a multispeed divider are recognised but gated out.
+A1_DISPATCH_WINDOW = 0x20
+
 STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
 INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
 INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)

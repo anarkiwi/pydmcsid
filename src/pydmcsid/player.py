@@ -35,6 +35,7 @@ from pysidtracker.registers import (
 from pydmcsid import constants
 from pydmcsid.reader import (
     Song,
+    a1_order_table_base,
     order_table_base,
     pw_min_shift,
     release_clears_adsr,
@@ -883,9 +884,634 @@ class PlayerV1D(Player):
         self._output_1591(x)
 
 
-def _player_for(song: Song, subtune: int) -> Player:
+class PlayerA1:
+    """The reorganised ``$a1`` DMC engine (see :func:`pydmcsid.reader.dmc_variant`).
+
+    A genuinely different, V5-era player body (play routine at ``base+$a1``, not
+    ``base+$85``) with its own work-RAM map, transcribed from the 6502.  Notable
+    departures from the ``base+$85`` engine (:class:`Player`):
+
+    * per-voice state lives in a ``$17cf..$1845`` block (orderptr ``$17cf/$17d2``,
+      order index ``$17d5``, pattern index ``$17d8``, duration ``$17db/$17de``,
+      transpose ``$17e4``) with globals in ``$1012..$101f``; the SID voice stride
+      is ``$1009,X`` = ``{0,7,14}``;
+    * a two-frame startup gate (``$1842``), a single global tempo divider
+      (``$1013`` reload ``$1012``), and a note is retriggered by writing
+      ``CTRL=$09`` (gate+test) for one frame, then the steady tick clears test and
+      emits the real waveform;
+    * orderlist markers ``$ff``(jump)/``$fe``(stop)/``$fd``/``$fc``(transpose) and
+      a rich pattern-command set (``$fd`` duration, ``$fc`` instrument, ``$fb/$fa``
+      portamento, ``$f9`` filter-res+volume, ``$f8`` cutoff, ``$f2/$f1`` direct
+      AD/SR, ``$f7/$f6`` volume-fade speeds, ``$f5`` tie, ``$f4`` gate, ``$f3``
+      sustain override);
+    * per-voice wavetable (``$199e`` ctrl / ``$19ab`` arg), 16-bit PW sweep
+      (``$19b8/$19bf``), triangle vibrato with a one-shot depth-doubling ramp, and
+      a portamento; a GLOBAL filter-cutoff sweep (``$19c6/$19c7``, driven once per
+      frame off voice 2) and a global volume fade (``$1018`` up / ``$1019`` down)
+      compose the final ``$d418``;
+    * two per-build patchable release stores (``$16c7`` SR-clear, ``$16e3``
+      gate-off mask) read from the opcode (``STA`` vs ``BIT`` no-op).
+
+    Conforms to the :class:`Player` playback interface (``init_writes`` +
+    ``play_frame``) so :func:`iter_frames` drives it identically.
+    """
+
+    # pylint: disable=too-many-instance-attributes
+
+    def __init__(self, song: Song, subtune: int = 0):
+        self.song = song
+        self.m = bytearray(song.mem)
+        base = song.base
+        self.base = base
+        self.rel = base - 0x1000  # the player is authored at $1000
+        self.sub = subtune & 0xFF
+        self._writes: List[Tuple[int, int]] = []
+        self._sid_setup: List[Tuple[int, int]] = []  # startup-gate frame writes
+        self.finished = False
+        self.f8 = 0  # pattern/orderlist pointer (zero-page $f8/$f9)
+        self.f9 = 0
+        m = self.m
+
+        def op(off: int) -> int:
+            idx = base + off
+            return (m[idx] | (m[idx + 1] << 8)) & 0xFFFF
+
+        order = a1_order_table_base(m, base)
+        self.b_order = order if order is not None else 0
+        self.b_patlo = op(constants.A1_PATTERN_LO_OP)
+        self.b_pathi = op(constants.A1_PATTERN_HI_OP)
+        self.b_inst = op(constants.A1_INST_OP)
+        self.b_wtctrl = op(constants.A1_WT_CTRL_OP)
+        self.b_wtarg = op(constants.A1_WT_ARG_OP)
+        self.b_pwa = op(constants.A1_PW_A_OP)
+        self.b_pwb = op(constants.A1_PW_B_OP)
+        self.b_filta = op(constants.A1_FILT_A_OP)
+        self.b_filtb = op(constants.A1_FILT_B_OP)
+        self.b_freqlo = (base + constants.A1_FREQ_LO_REL) & 0xFFFF
+        self.b_freqhi = (base + constants.A1_FREQ_HI_REL) & 0xFFFF
+        # Per-build patchable release SR-clear ($16c7 STA $d406,Y == $99).
+        self._rel_clears_sr = m[(base + constants.A1_REL_SR_CLEAR_REL) & 0xFFFF] == 0x99
+        self.init()
+
+    def _a(self, addr: int) -> int:
+        return (addr + self.rel) & 0xFFFF
+
+    def w(self, reg: int, val: int) -> None:
+        """Emit a SID register write (absolute $D4xx)."""
+        self._writes.append((reg & 0xFFFF, val & 0xFF))
+
+    def _ld(self, y: int) -> int:
+        """``($f8),Y`` pattern/orderlist byte read (f8/f9 are absolute)."""
+        return self.m[(((self.f9 << 8) | self.f8) + (y & 0xFF)) & 0xFFFF]
+
+    # -- init ($1040) ----------------------------------------------------
+    def init(self) -> None:
+        """Run the ``$a1`` init for the selected subtune."""
+        m = self.m
+        a = self._a
+        self._writes = []
+        y = (self.sub * 8) & 0xFF
+        for x in range(3):
+            m[a(0x17CF) + x] = m[(self.b_order + y) & 0xFFFF]
+            m[a(0x17D2) + x] = m[(self.b_order + y + 1) & 0xFFFF]
+            y = (y + 2) & 0xFF
+        m[a(0x1012)] = m[(self.b_order + y) & 0xFFFF]
+        m[a(0x101B)] = m[(self.b_order + y + 1) & 0xFFFF]
+        for i in range(0x71):
+            m[a(0x17D5) + i] = 0
+        m[a(0x1018)] = 0
+        m[a(0x1019)] = 0
+        for x in range(3):
+            m[a(0x17DB) + x] = 1
+            m[a(0x1006) + x] = 1
+        for i in range(0x18):
+            self.w(SID_BASE + i, 0)
+        self.w(SID_BASE + 0x04, 0x08)
+        self.w(SID_BASE + 0x0B, 0x08)
+        self.w(SID_BASE + 0x12, 0x08)
+        m[a(0x1842)] = 2
+        # The two startup-gate play frames ($1842) run before real playback and
+        # touch no SID register (the play body JMPs past its writes at $10ac), so
+        # the chip holds this init register state for those frames.  Keep the
+        # writes so ``play_frame`` re-emits them for the gate frames -- otherwise
+        # they are silent and the per-VBI write framing (which anchors frame 0 on
+        # the first post-init write) would drop them, shifting playback two frames
+        # early relative to the chip.
+        self._sid_setup = list(self._writes)
+
+    @property
+    def init_writes(self) -> List[Tuple[int, int]]:
+        """The SID writes the init routine emitted (frame-0 baseline)."""
+        return list(self._writes)
+
+    # -- play ($10a1) ----------------------------------------------------
+    def play_frame(self) -> List[Tuple[int, int]]:
+        """Run one player tick; return ``(reg, value)`` writes (abs $D4xx)."""
+        self._writes = []
+        m = self.m
+        a = self._a
+        if m[a(0x1842)] != 0:  # two-frame startup gate: chip holds the init state
+            m[a(0x1842)] = (m[a(0x1842)] - 1) & 0xFF
+            self._writes = list(self._sid_setup)
+            return list(self._writes)
+        m[a(0x1013)] = (m[a(0x1013)] - 1) & 0xFF  # global tempo divider
+        if m[a(0x1013)] & 0x80:
+            m[a(0x1013)] = m[a(0x1012)]
+        for x in range(3):
+            self._voice(x)
+        self.w(SID_BASE + 0x15, m[a(0x1017)])  # filter cutoff lo
+        self.w(SID_BASE + 0x16, m[a(0x1016)])  # filter cutoff hi
+        self.finished = all(m[a(0x1006) + x] == 0 for x in range(3))
+        return list(self._writes)
+
+    # -- per-voice gate ($10dd) ------------------------------------------
+    def _voice(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        if m[a(0x1012)] == m[a(0x1013)] and m[a(0x1006) + x] != 0:
+            m[a(0x17DB) + x] = (m[a(0x17DB) + x] - 1) & 0xFF
+            if m[a(0x17DB) + x] == 0:
+                self._advance(x)
+                return
+        self._steady(x)
+
+    # -- orderlist advance ($10f2) ---------------------------------------
+    def _advance(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        self.f8 = m[a(0x17CF) + x]
+        self.f9 = m[a(0x17D2) + x]
+        y = m[a(0x17D5) + x]
+        v = self._ld(y)
+        if v < 0x80:
+            self._pattern_setup(x, v)
+            return
+        if v == 0xFF:  # jump: next byte is the new order index
+            y = (y + 1) & 0xFF
+            v = self._ld(y)
+            m[a(0x17D5) + x] = v
+            y = v
+            v = self._ld(y)
+        elif v == 0xFE:  # stop
+            m[a(0x1006) + x] = 0
+            self._wt_output(x)
+            return
+        if v == 0xFD:  # set transpose (positive)
+            y = (y + 1) & 0xFF
+            m[a(0x17D5) + x] = (m[a(0x17D5) + x] + 2) & 0xFF
+            m[a(0x17E4) + x] = self._ld(y)
+            y = (y + 1) & 0xFF
+            v = self._ld(y)
+        elif v == 0xFC:  # set transpose (negated)
+            y = (y + 1) & 0xFF
+            m[a(0x17D5) + x] = (m[a(0x17D5) + x] + 2) & 0xFF
+            m[a(0x17E4) + x] = ((self._ld(y) ^ 0xFF) + 1) & 0xFF
+            y = (y + 1) & 0xFF
+            v = self._ld(y)
+        self._pattern_setup(x, v)
+
+    def _pattern_setup(self, x: int, num: int) -> None:  # $114d
+        self.f8 = self.m[(self.b_patlo + num) & 0xFFFF]
+        self.f9 = self.m[(self.b_pathi + num) & 0xFFFF]
+        self._patwalk(x)
+
+    # -- pattern walk ($1158) --------------------------------------------
+    def _patwalk(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        for _ in range(0x400):
+            y = m[a(0x17D8) + x]
+            v = self._ld(y)
+            if v < 0x80:  # note
+                self._note(x, v)
+                return
+            if v == 0xFD:  # set note-duration
+                m[a(0x17DE) + x] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xFC:  # select instrument
+                m[a(0x17E1) + x] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xFE:  # end of row
+                self._pat_end_tail(x)
+                return
+            if v == 0xF4:  # gate-toggle + end of row
+                m[a(0x1817) + x] ^= 0x01
+                self._pat_end_tail(x)
+                return
+            if v == 0xF5:  # tie toggle
+                m[a(0x17EA) + x] ^= 0xFF
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 1) & 0xFF
+                continue
+            if v == 0xF3:  # sustain-nibble override
+                m[a(0x17E7) + x] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xFB:  # portamento: speed, from-note, to-note
+                m[a(0x17ED) + x] = self._ld((y + 1) & 0xFF)
+                m[a(0x100F) + x] = (self._ld((y + 2) & 0xFF) + m[a(0x17E4) + x]) & 0xFF
+                tgt = (self._ld((y + 3) & 0xFF) + m[a(0x17E4) + x]) & 0xFF
+                m[a(0x17F0) + x] = tgt
+                if tgt == 0:
+                    m[a(0x17F0) + x] = tgt
+                    m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                    self._pat_end_tail(x)
+                    return
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 3) & 0xFF
+                self._note_onset(x)
+                return
+            if v == 0xFA:  # portamento: speed, to-note (from current)
+                m[a(0x17ED) + x] = self._ld((y + 1) & 0xFF)
+                m[a(0x17F0) + x] = (self._ld((y + 2) & 0xFF) + m[a(0x17E4) + x]) & 0xFF
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                self._pat_end_tail(x)
+                return
+            if v == 0xF9:  # filter res ($d417) + volume-hi ($1015)
+                b = self._ld((y + 1) & 0xFF)
+                self.w(SID_BASE + 0x17, b if b == 0 else (((b << 4) & 0xFF) | 0x04))
+                m[a(0x1015)] = b & 0xF0
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xF8:  # filter cutoff-hi override
+                m[a(0x1843)] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xF2:  # direct AD
+                self.w(SID_BASE + 0x05 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xF1:  # direct SR
+                self.w(SID_BASE + 0x06 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xF7:  # volume fade-up speed
+                m[a(0x1018)] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            if v == 0xF6:  # volume fade-down speed
+                m[a(0x1019)] = self._ld((y + 1) & 0xFF)
+                m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
+                continue
+            m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF  # unknown: skip 2
+        self._wt_output(x)
+
+    def _pat_end_tail(self, x: int) -> None:  # $118c
+        m = self.m
+        a = self._a
+        m[a(0x17DB) + x] = m[a(0x17DE) + x]
+        m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 1) & 0xFF
+        v = self._ld(m[a(0x17D8) + x])
+        m[a(0x181D) + x] = v
+        if v == 0xFF:  # end of pattern -> advance order index
+            m[a(0x17D8) + x] = 0
+            m[a(0x17E7) + x] = 0
+            m[a(0x17EA) + x] = 0
+            m[a(0x17D5) + x] = (m[a(0x17D5) + x] + 1) & 0xFF
+        self._wt_output(x)
+
+    # -- note ($12b5) ----------------------------------------------------
+    def _note(self, x: int, v: int) -> None:
+        m = self.m
+        a = self._a
+        m[a(0x100F) + x] = (v + m[a(0x17E4) + x]) & 0xFF
+        if m[a(0x17EA) + x] != 0:  # tie: freq-only, no retrigger
+            self._pat_end_tail(x)
+            return
+        self._note_onset(x)
+
+    def _note_onset(self, x: int) -> None:  # $12c4
+        m = self.m
+        a = self._a
+        y = (m[a(0x17E1) + x] * 8) & 0xFF  # inst*8
+        ad = self.m[(self.b_inst + y) & 0xFFFF]
+        sr = self.m[(self.b_inst + y + 1) & 0xFFFF]
+        yv = m[a(0x1009) + x]
+        if m[a(0x17E7) + x] != 0:  # sustain-nibble override into SR
+            sr = (sr & 0x0F) | ((m[a(0x17E7) + x] << 4) & 0xFF)
+        self.w(SID_BASE + 0x06 + yv, sr)
+        self.w(SID_BASE + 0x05 + yv, ad)
+        m[a(0x17DB) + x] = m[a(0x17DE) + x]
+        m[a(0x1808) + x] = 0
+        self.w(SID_BASE + 0x04 + yv, 0x09)  # gate+test
+        m[a(0x180B) + x] = 0x09
+        self.w(SID_BASE + 0x00 + yv, 0)
+        self.w(SID_BASE + 0x01 + yv, 0)
+        m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 1) & 0xFF
+        v = self._ld(m[a(0x17D8) + x])
+        m[a(0x181D) + x] = v
+        if v == 0xFF:
+            m[a(0x17D8) + x] = 0
+            m[a(0x17E7) + x] = 0
+            m[a(0x17EA) + x] = 0
+            m[a(0x17D5) + x] = (m[a(0x17D5) + x] + 1) & 0xFF
+
+    # -- steady ($1332) --------------------------------------------------
+    def _steady(self, x: int) -> None:
+        if self.m[self._a(0x180B) + x] != 0:  # first frame after onset
+            self._note_init(x)
+        else:
+            self._tick(x)
+
+    def _note_init(self, x: int) -> None:  # $133a
+        m = self.m
+        a = self._a
+        m[a(0x180B) + x] = 0
+        self.w(SID_BASE + 0x18, m[a(0x1015)] | m[a(0x101B)])
+        y = (m[a(0x17E1) + x] * 8) & 0xFF
+        m[a(0x17FC) + x] = self.m[(self.b_inst + y + 5) & 0xFFFF]  # vib delay
+        m[a(0x17FF) + x] = self.m[(self.b_inst + y + 6) & 0xFFFF]  # vib period
+        m[a(0x101A)] = self.m[(self.b_inst + y + 7) & 0xFFFF] & 0x07  # pw shift
+        m[a(0x17F3) + x] = self.m[(self.b_inst + y + 2) & 0xFFFF]  # wavetable start
+        v = self.m[(self.b_inst + y + 3) & 0xFFFF]  # pw table start
+        m[a(0x1841)] = v
+        if v != 0:
+            m[a(0x17F6) + x] = v
+        v = self.m[(self.b_inst + y + 4) & 0xFFFF]  # filter table start
+        m[a(0x183F)] = v
+        if v != 0:
+            m[a(0x17F9)] = v
+        self._wt_step(x, check_loop=False)  # $137f: first step, no loop marker
+        m[a(0x1817) + x] = 0xF7
+        if m[a(0x1841)] != 0:  # seed PW sweep
+            yp = m[a(0x17F6) + x]
+            if yp != 0:
+                m[a(0x1823) + x] = self.m[(self.b_pwa + yp) & 0xFFFF]
+                m[a(0x1820) + x] = self.m[(self.b_pwb + yp) & 0xFFFF]
+                m[a(0x1826) + x] = 0
+                m[a(0x1829) + x] = 0
+                m[a(0x17F6) + x] = (m[a(0x17F6) + x] + 1) & 0xFF
+        if m[a(0x183F)] != 0:  # seed global filter cutoff
+            yf = m[a(0x17F9)]
+            if m[a(0x1843)] != 0:
+                m[a(0x1016)] = m[a(0x1843)]
+                m[a(0x1017)] = 0
+            else:
+                m[a(0x1016)] = self.m[(self.b_filta + yf) & 0xFFFF]
+                m[a(0x1017)] = self.m[(self.b_filtb + yf) & 0xFFFF]
+            m[a(0x183B)] = 0
+            m[a(0x183C)] = 0
+            m[a(0x17F9)] = (m[a(0x17F9)] + 1) & 0xFF
+        m[a(0x1805) + x] = 0
+        m[a(0x182C) + x] = 0
+        m[a(0x182F) + x] = 0
+        m[a(0x1832) + x] = 0
+        m[a(0x1835) + x] = 0
+        m[a(0x1838) + x] = 0
+        yn = m[a(0x100F) + x]  # vibrato step base = freqhi[note] << pw shift
+        m[a(0x1802) + x] = self.m[(self.b_freqhi + yn) & 0xFFFF]
+        for _ in range(m[a(0x101A)]):
+            lo = (m[a(0x1802) + x] << 1) & 0xFF
+            hi = ((m[a(0x1805) + x] << 1) | (m[a(0x1802) + x] >> 7)) & 0xFF
+            m[a(0x1802) + x] = lo
+            m[a(0x1805) + x] = hi
+        self._output(x)
+
+    def _wt_step(self, x: int, check_loop: bool = True) -> None:
+        """Advance the waveform wavetable one step and set $180e/$1811/$1814.
+
+        The steady output ($165b) honours the ``$90`` loop marker; the note-init
+        first step ($137f) does NOT -- there ``$90`` is a literal waveform value --
+        so ``check_loop=False`` reproduces that (`_note_init`)."""
+        m = self.m
+        a = self._a
+        y = m[a(0x17F3) + x]
+        if check_loop and self.m[(self.b_wtctrl + y) & 0xFFFF] == 0x90:  # loop marker
+            m[a(0x17F3) + x] = self.m[(self.b_wtarg + y) & 0xFFFF]
+            y = m[a(0x17F3) + x]
+        ctrl = self.m[(self.b_wtctrl + y) & 0xFFFF]
+        m[a(0x1814) + x] = ctrl
+        if ctrl & 0x08:  # arg = absolute freq hi
+            m[a(0x1811) + x] = self.m[(self.b_wtarg + y) & 0xFFFF]
+            m[a(0x180E) + x] = 0
+        else:  # arg + current note -> freq table
+            yn = (self.m[(self.b_wtarg + y) & 0xFFFF] + m[a(0x100F) + x]) & 0xFF
+            m[a(0x180E) + x] = self.m[(self.b_freqlo + yn) & 0xFFFF]
+            m[a(0x1811) + x] = self.m[(self.b_freqhi + yn) & 0xFFFF]
+        m[a(0x17F3) + x] = (m[a(0x17F3) + x] + 1) & 0xFF
+
+    # -- steady tick ($1439) --------------------------------------------
+    def _tick(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        y = m[a(0x17F6) + x]  # PW sweep
+        if self.m[(self.b_pwa + y) & 0xFFFF] == 0x90:
+            m[a(0x17F6) + x] = self.m[(self.b_pwb + y) & 0xFFFF]
+            y = m[a(0x17F6) + x]
+        m[a(0x101F)] = self.m[(self.b_pwa + y) & 0xFFFF]
+        m[a(0x101E)] = self.m[(self.b_pwb + y) & 0xFFFF]
+        y = (y + 1) & 0xFF
+        lo = m[a(0x1820) + x] + m[a(0x101E)]
+        m[a(0x1820) + x] = lo & 0xFF
+        m[a(0x1823) + x] = (
+            m[a(0x1823) + x] + m[a(0x101F)] + (1 if lo > 0xFF else 0)
+        ) & 0xFF
+        lo = m[a(0x1826) + x] + 1
+        m[a(0x1826) + x] = lo & 0xFF
+        m[a(0x1829) + x] = (m[a(0x1829) + x] + (1 if lo > 0xFF else 0)) & 0xFF
+        if (
+            m[a(0x1829) + x] == self.m[(self.b_pwa + y) & 0xFFFF]
+            and m[a(0x1826) + x] == self.m[(self.b_pwb + y) & 0xFFFF]
+        ):
+            m[a(0x1826) + x] = 0
+            m[a(0x1829) + x] = 0
+            m[a(0x17F6) + x] = (m[a(0x17F6) + x] + 2) & 0xFF
+        if x == 2:  # global filter cutoff sweep runs off voice 2
+            self._filter_sweep()
+        if m[a(0x17ED) + x] != 0:
+            self._slide(x)
+            return
+        self._vibrato(x)
+
+    def _filter_sweep(self) -> None:  # $149a
+        m = self.m
+        a = self._a
+        y = m[a(0x17F9)]
+        if self.m[(self.b_filta + y) & 0xFFFF] == 0x90:
+            m[a(0x17F9)] = self.m[(self.b_filtb + y) & 0xFFFF]
+            y = m[a(0x17F9)]
+        m[a(0x101F)] = self.m[(self.b_filta + y) & 0xFFFF]
+        m[a(0x101E)] = self.m[(self.b_filtb + y) & 0xFFFF]
+        y = (y + 1) & 0xFF
+        lo = m[a(0x1017)] + m[a(0x101E)]
+        m[a(0x1017)] = lo & 0xFF
+        m[a(0x1016)] = (m[a(0x1016)] + m[a(0x101F)] + (1 if lo > 0xFF else 0)) & 0xFF
+        lo = m[a(0x183B)] + 1
+        m[a(0x183B)] = lo & 0xFF
+        m[a(0x183C)] = (m[a(0x183C)] + (1 if lo > 0xFF else 0)) & 0xFF
+        if (
+            m[a(0x183C)] == self.m[(self.b_filta + y) & 0xFFFF]
+            and m[a(0x183B)] == self.m[(self.b_filtb + y) & 0xFFFF]
+        ):
+            m[a(0x183B)] = 0
+            m[a(0x183C)] = 0
+            m[a(0x17F9)] = (m[a(0x17F9)] + 2) & 0xFF
+
+    # -- portamento ($14ff) ----------------------------------------------
+    def _slide(self, x: int) -> None:
+        up = self.m[self._a(0x100F) + x] < self.m[self._a(0x17F0) + x]
+        m = self.m
+        a = self._a
+        if up:
+            lo = m[a(0x1835) + x] + m[a(0x17ED) + x]
+            m[a(0x1835) + x] = lo & 0xFF
+            m[a(0x1838) + x] = (m[a(0x1838) + x] + (1 if lo > 0xFF else 0)) & 0xFF
+        else:
+            lo = m[a(0x1835) + x] - m[a(0x17ED) + x]
+            m[a(0x1835) + x] = lo & 0xFF
+            m[a(0x1838) + x] = (m[a(0x1838) + x] - (1 if lo < 0 else 0)) & 0xFF
+        s = m[a(0x180E) + x] + m[a(0x1835) + x]
+        m[a(0x183D)] = s & 0xFF
+        chi = (m[a(0x1811) + x] + m[a(0x1838) + x] + (1 if s > 0xFF else 0)) & 0xFF
+        m[a(0x183E)] = chi
+        y = m[a(0x17F0) + x]
+        tgt_hi = self.m[(self.b_freqhi + y) & 0xFFFF]
+        if up:
+            if chi != tgt_hi:
+                self._vol_fade_out(x)
+            else:
+                self._slide_reach(x, y)
+            return
+        if chi < tgt_hi or (
+            chi == tgt_hi and m[a(0x183D)] < self.m[(self.b_freqlo + y) & 0xFFFF]
+        ):
+            self._slide_reach(x, y)
+        else:
+            self._vol_fade_out(x)
+
+    def _slide_reach(self, x: int, y: int) -> None:  # $1534: falls into vibrato
+        m = self.m
+        a = self._a
+        m[a(0x100F) + x] = y
+        m[a(0x180E) + x] = self.m[(self.b_freqlo + y) & 0xFFFF]
+        m[a(0x1811) + x] = self.m[(self.b_freqhi + y) & 0xFFFF]
+        m[a(0x1835) + x] = 0
+        m[a(0x1838) + x] = 0
+        m[a(0x17ED) + x] = 0
+        self._vibrato(x)
+
+    # -- triangle vibrato ($1592) ----------------------------------------
+    def _vibrato(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        if m[a(0x17EA) + x] != 0:  # tie: no vibrato
+            m[a(0x1835) + x] = 0
+            m[a(0x1838) + x] = 0
+            self._vol_fade_out(x)
+            return
+        if m[a(0x17FF) + x] == 0:  # no vibrato period
+            self._vol_fade_out(x)
+            return
+        if m[a(0x17FC) + x] != 0:  # vibrato onset delay
+            m[a(0x17FC) + x] = (m[a(0x17FC) + x] - 1) & 0xFF
+            self._vol_fade_out(x)
+            return
+        if m[a(0x182F) + x] == 0:  # ascending half-cycle ($15b7)
+            lo = m[a(0x1835) + x] + m[a(0x1802) + x]
+            m[a(0x1835) + x] = lo & 0xFF
+            m[a(0x1838) + x] = (
+                m[a(0x1838) + x] + m[a(0x1805) + x] + (1 if lo > 0xFF else 0)
+            ) & 0xFF
+            m[a(0x1832) + x] = (m[a(0x1832) + x] + 1) & 0xFF
+            if m[a(0x1832) + x] != m[a(0x17FF) + x]:
+                self._vol_fade_out(x)
+                return
+            m[a(0x1832) + x] = 0
+            m[a(0x182F) + x] = (m[a(0x182F) + x] + 1) & 0xFF
+            if m[a(0x182C) + x] != 0:  # one-shot depth doubling
+                self._vol_fade_out(x)
+                return
+            lo = (m[a(0x1802) + x] << 1) & 0xFF
+            hi = ((m[a(0x1805) + x] << 1) | (m[a(0x1802) + x] >> 7)) & 0xFF
+            m[a(0x1802) + x] = lo
+            m[a(0x1805) + x] = hi
+            m[a(0x182C) + x] = (m[a(0x182C) + x] + 1) & 0xFF
+            self._vol_fade_out(x)
+            return
+        # descending half-cycle ($15ee)
+        lo = m[a(0x1835) + x] - m[a(0x1802) + x]
+        m[a(0x1835) + x] = lo & 0xFF
+        m[a(0x1838) + x] = (
+            m[a(0x1838) + x] - m[a(0x1805) + x] - (1 if lo < 0 else 0)
+        ) & 0xFF
+        m[a(0x1832) + x] = (m[a(0x1832) + x] + 1) & 0xFF
+        if m[a(0x1832) + x] != m[a(0x17FF) + x]:
+            self._vol_fade_out(x)
+            return
+        m[a(0x1832) + x] = 0
+        m[a(0x182F) + x] = (m[a(0x182F) + x] - 1) & 0xFF
+        self._vol_fade_out(x)
+
+    # -- global volume fade ($1614) --------------------------------------
+    def _vol_fade_out(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        if m[a(0x1019)] != 0:  # fade down
+            lo = m[a(0x101C)] - m[a(0x1019)]
+            m[a(0x101C)] = lo & 0xFF
+            m[a(0x101B)] = (m[a(0x101B)] - (1 if lo < 0 else 0)) & 0xFF
+            if m[a(0x101B)] == 0:
+                m[a(0x1019)] = 0
+        if m[a(0x1018)] != 0:  # fade up
+            lo = m[a(0x101C)] + m[a(0x1018)]
+            m[a(0x101C)] = lo & 0xFF
+            m[a(0x101B)] = (m[a(0x101B)] + (1 if lo > 0xFF else 0)) & 0xFF
+            if m[a(0x101B)] == 0x0F:
+                m[a(0x1018)] = 0
+        self.w(SID_BASE + 0x18, m[a(0x101B)] | m[a(0x1015)])
+        self._wt_output(x)
+
+    def _wt_output(self, x: int) -> None:  # $165b: wavetable step then output
+        self._wt_step(x)
+        self._output(x)
+
+    # -- final output ($169b/$16e6) --------------------------------------
+    def _output(self, x: int) -> None:
+        m = self.m
+        a = self._a
+        yv = m[a(0x1009) + x]
+        term = m[a(0x181D) + x]
+        if term not in (0xFE, 0xF4, 0xFA, 0xF2, 0xF1):
+            self._release(x, term)
+        lo = m[a(0x180E) + x] + m[a(0x1835) + x]
+        self.w(SID_BASE + 0x00 + yv, lo & 0xFF)
+        self.w(
+            SID_BASE + 0x01 + yv,
+            (m[a(0x1811) + x] + m[a(0x1838) + x] + (1 if lo > 0xFF else 0)) & 0xFF,
+        )
+        self.w(SID_BASE + 0x02 + yv, m[a(0x1820) + x])
+        self.w(SID_BASE + 0x03 + yv, m[a(0x1823) + x])
+        self.w(SID_BASE + 0x04 + yv, m[a(0x1814) + x] & m[a(0x1817) + x])
+
+    def _release(self, x: int, term: int) -> None:  # $16b9 chain
+        m = self.m
+        a = self._a
+        yv = m[a(0x1009) + x]
+        if term == 0xF5:
+            if m[a(0x17EA) + x] != 0:
+                self._release_dur(x, yv)
+            return
+        if m[a(0x17EA) + x] != 0:  # tie: no release
+            return
+        self._release_dur(x, yv)
+
+    def _release_dur(self, x: int, yv: int) -> None:  # $16be
+        m = self.m
+        a = self._a
+        if m[a(0x17DB) + x] == 1:  # last frame: clear SR (if not patched out)
+            if self._rel_clears_sr:
+                self.w(SID_BASE + 0x06 + yv, 0)
+            return
+        if m[a(0x17DB) + x] == 2 and m[a(0x1013)] == 0:  # gate-off mask
+            m[a(0x1817) + x] = 0xF6
+
+
+def _player_for(song: Song, subtune: int):
     """Instantiate the play body matching ``song``'s DMC generation."""
-    if song.variant() == "v1d":
+    variant = song.variant()
+    if variant == "a1":
+        return PlayerA1(song, subtune=subtune)
+    if variant == "v1d":
         return PlayerV1D(song, subtune=subtune)
     return Player(song, subtune=subtune)
 

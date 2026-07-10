@@ -39,6 +39,15 @@ TUNES = {
     # LSR overwritten by an illegal 2-byte no-op ($17), so pw_min = inst[2]>>2
     # (not >>4).  pydmcsid reads the shift from the code and reproduces it.
     "nop_years": ("MUSICIANS/A/Aomeba/20_Years_of_NOP.sid", "20_Years_of_NOP.grid.txt"),
+    # $a1 engine (V5-era reorganised body, play at base+$a1): a genuinely
+    # different generation reproduced byte-exact by PlayerA1.  Katusha is the
+    # canonical body; Dum_Dum relocates its init (order-table base read from the
+    # $17cf store site); Blutal_Haldcole patches out the release SR-clear
+    # ($16c7 STA->BIT); Short_Fusion exercises the portamento-into-vibrato path.
+    "katusha": ("DEMOS/G-L/Katusha.sid", "Katusha.grid.txt"),
+    "dum_dum": ("MUSICIANS/F/Froyd/Dum_Dum.sid", "Dum_Dum.grid.txt"),
+    "blutal": ("MUSICIANS/C/CreaMD/Blutal_Haldcole.sid", "Blutal_Haldcole.grid.txt"),
+    "short_fusion": ("MUSICIANS/P/PRI/Short_Fusion.sid", "Short_Fusion.grid.txt"),
 }
 
 
