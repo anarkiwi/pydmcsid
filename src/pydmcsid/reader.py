@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pysidtracker import BaseSidParser, CodePattern, SidError, SidImage, find_code_all
+from pysidtracker.mos6502 import (
+    ABS_STORE_OPS,
+    BRANCH_OPS,
+    INERT_OPS,
+    OP_LEN,
+    ZP_STORE_OPS,
+    walk_until,
+)
+from pysidtracker.registers import SID_BASE, SID_REG_COUNT
 
 from pydmcsid import constants
 from pydmcsid.errors import SidParseError
@@ -158,7 +167,7 @@ def _norm_n95_body(mem, base: int) -> Optional[bytes]:
     per-tune data region (``>= base+$858``, past the fixed note-freq tables and
     work RAM) plus the self-modified tempo-reload seed at ``$10bf`` (init
     overwrites it from the subtune record, so its source value never matters),
-    leaving only the load-invariant engine opcodes.  Walking with :data:`_OP_LEN`
+    leaving only the load-invariant engine opcodes.  Walking with :data:`OP_LEN`
     keeps the operand positions aligned; a non-family body normalises differently
     and fails the hash.
     """
@@ -169,7 +178,7 @@ def _norm_n95_body(mem, base: int) -> Optional[bytes]:
     pc = constants.N95_BODY_LO
     while pc < constants.N95_BODY_HI:
         op = mem[base + pc]
-        length = _OP_LEN[op]
+        length = OP_LEN[op]
         if pc + length > constants.N95_BODY_HI:  # instr straddles the body end:
             return None  # walk desynced from the canonical layout -- not a match
         if length == 3:
@@ -289,122 +298,13 @@ def _v1d_layout_ok(mem, base: int) -> bool:
     )
 
 
-# 6502 instruction lengths by opcode (1/2/3 bytes), for the short linear walk of
-# a release helper up to its ``RTS`` (validated against py65 for all legal
-# opcodes).  Undefined/illegal opcodes default to the legal opcode sharing their
-# column's addressing mode, which is enough to keep the tiny-helper walk aligned.
-_OP_LEN = bytes.fromhex(
-    "0102010202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0302010202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0102010202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0102010202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0202020202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0202020202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0202020202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-    "0202020202020202"
-    "0102010203030303"
-    "0202010202020202"
-    "0103010303030303"
-)
-
-
-# Conditional-branch opcodes (2-byte, PC-relative) a benign wrapper may use.
-_WRAP_BRANCH = frozenset((0x10, 0x30, 0x50, 0x70, 0x90, 0xB0, 0xD0, 0xF0))
-# Side-effect-free opcodes a benign wrapper may carry (immediate loads, register
-# transfers, in-register arithmetic/shift, compares, flag ops) -- none touch memory
-# or divert control, so they cannot change what the player observes per frame.
-_WRAP_INERT = frozenset(
-    (
-        0xA9,
-        0xA2,
-        0xA0,
-        0xAD,
-        0xAE,
-        0xAC,
-        0xA5,
-        0xA6,
-        0xA4,
-        0xBD,
-        0xB9,
-        0xBC,
-        0xBE,
-        0xB5,
-        0xB4,
-        0xB6,
-        0xAA,
-        0xA8,
-        0x8A,
-        0x98,
-        0xE8,
-        0xC8,
-        0xCA,
-        0x88,
-        0x4A,
-        0x0A,
-        0x6A,
-        0x2A,
-        0x18,
-        0x38,
-        0xEA,
-        0xC9,
-        0xE0,
-        0xC0,
-        0x29,
-        0x09,
-        0x49,
-        0x69,
-        0xE9,
-    )
-)
-# Store / read-modify-write opcodes, split by operand width (abs = 3-byte, zp =
-# 2-byte).  A benign wrapper may store to its OWN counter cell (a multispeed
-# divider), but never to a SID register or to a followed JMP's operand bytes.
-_WRAP_STORE_ABS = frozenset(
-    (0x8D, 0x8E, 0x8C, 0xCE, 0xDE, 0xEE, 0xFE, 0x0E, 0x4E, 0x2E, 0x6E)
-)
-_WRAP_STORE_ZP = frozenset(
-    (
-        0x85,
-        0x95,
-        0x86,
-        0x96,
-        0x84,
-        0x94,
-        0xC6,
-        0xD6,
-        0xE6,
-        0xF6,
-        0x06,
-        0x16,
-        0x46,
-        0x56,
-        0x26,
-        0x36,
-        0x66,
-        0x76,
-    )
-)
+# 6502 instruction lengths and the wrapper-opcode classes come from the shared
+# ``pysidtracker.mos6502`` surface (byte-identical to the tables this reader used
+# to carry): ``OP_LEN`` keeps the linear walks aligned; ``BRANCH_OPS`` /
+# ``INERT_OPS`` / ``ABS_STORE_OPS`` / ``ZP_STORE_OPS`` classify a benign wrapper's
+# opcodes (a store to its OWN counter cell is allowed; a SID write or a followed
+# JMP's operand bytes are not).
+_RTS_STOP = frozenset((0x60,))  # RTS -- terminates a linear helper walk
 
 
 def _wrap_read(mem, overlay: dict, addr: int) -> Optional[int]:
@@ -445,7 +345,7 @@ def _sim_init_patches(mem, base: int, init: Optional[int], subtune: int) -> dict
             continue
         if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- stop
             break
-        length = _OP_LEN[op]
+        length = OP_LEN[op]
         acc, xreg, yreg = _sim_init_step(mem, patches, op, pc, acc, xreg, yreg)
         pc = (pc + length) & 0xFFFF
     return patches
@@ -533,7 +433,7 @@ def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
                 break
             visited.add(pcx)
             op = mem[pcx]
-            length = _OP_LEN[op]
+            length = OP_LEN[op]
             if pcx + length > len(mem):
                 return False
             if op == 0x4C:  # JMP abs -- a tail (or an in-wrapper hop)
@@ -553,20 +453,22 @@ def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
                 return False
             if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- not benign
                 return False
-            if op in _WRAP_BRANCH:
+            if op in BRANCH_OPS:
                 rel = mem[pcx + 1]
                 dest = (pcx + 2 + (rel - 256 if rel >= 0x80 else rel)) & 0xFFFF
                 stack.append(dest)
                 pcx = (pcx + 2) & 0xFFFF
                 continue
-            if op in _WRAP_STORE_ABS:
+            if op in ABS_STORE_OPS:
                 tgt = (mem[pcx + 1] | (mem[pcx + 2] << 8)) & 0xFFFF
-                if 0xD400 <= tgt <= 0xD41F:  # a SID write -- alters the frame
+                if (
+                    SID_BASE <= tgt < SID_BASE + SID_REG_COUNT
+                ):  # SID write -- alters frame
                     return False
                 stores.add(tgt)
-            elif op in _WRAP_STORE_ZP:
+            elif op in ZP_STORE_OPS:
                 stores.add(mem[pcx + 1] & 0xFFFF)
-            elif op not in _WRAP_INERT:
+            elif op not in INERT_OPS:
                 return False  # an unmodelled opcode -- not provably benign
             pcx = (pcx + length) & 0xFFFF
     if stores & jmp_operands:  # a per-call self-modifying JMP target
@@ -597,18 +499,13 @@ def _helper_zeros_adsr(mem, addr: int) -> bool:
     by unrelated ``STA $D405/$D406`` bytes past the ``RTS``.
     """
     seen_ad = seen_sr = False
-    pc = addr
-    for _ in range(24):  # release helpers are a handful of instructions
+    for pc in walk_until(mem, addr, _RTS_STOP, budget=24):
         if pc + 2 >= len(mem):
             break
-        op = mem[pc]
-        if op == 0x60:  # RTS -- end of the helper
-            break
-        if op == 0x99:  # STA abs,Y
+        if mem[pc] == 0x99:  # STA abs,Y
             operand = mem[pc + 1] | (mem[pc + 2] << 8)
             seen_ad |= operand == 0xD405
             seen_sr |= operand == 0xD406
-        pc += _OP_LEN[op]
     return seen_ad and seen_sr
 
 
@@ -717,17 +614,11 @@ def pw_min_shift(mem, base: int) -> int:
     (the store operand ``$1756`` is fixed work RAM, so the chain sits at a fixed
     offset).
     """
-    pc = base + constants.PW_MIN_SHIFT_REL
     shift = 0
-    for _ in range(8):  # the shift chain is a handful of bytes
-        if pc >= len(mem):
-            break
-        op = mem[pc]
-        if op == constants.PW_MIN_STORE_OP:  # STA $1756,X -- end of the chain
-            break
-        if op == 0x4A:  # LSR A
+    stop = frozenset((constants.PW_MIN_STORE_OP,))  # STA $1756,X ends the chain
+    for pc in walk_until(mem, base + constants.PW_MIN_SHIFT_REL, stop, budget=8):
+        if mem[pc] == 0x4A:  # LSR A
             shift += 1
-        pc += _OP_LEN[op]
     return shift
 
 
@@ -737,7 +628,7 @@ def _norm_a1_body(mem, base: int) -> Optional[bytes]:
     Zeroes the operand of every 3-byte instruction whose target lies in the
     per-tune data region (``>= base+$846``) plus the two patchable release
     opcodes, leaving only the load-invariant engine opcodes -- identical across
-    the whole family.  Walking with :data:`_OP_LEN` keeps the operand positions
+    the whole family.  Walking with :data:`OP_LEN` keeps the operand positions
     aligned; a non-family body normalises differently and fails the hash.
     """
     hi = base + constants.A1_BODY_HI
@@ -747,7 +638,7 @@ def _norm_a1_body(mem, base: int) -> Optional[bytes]:
     pc = constants.A1_BODY_LO
     while pc < constants.A1_BODY_HI:
         op = mem[base + pc]
-        length = _OP_LEN[op]
+        length = OP_LEN[op]
         if pc + length > constants.A1_BODY_HI:  # instr straddles the body end:
             return None  # walk desynced from the canonical layout -- not a match
         if length == 3:
