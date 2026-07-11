@@ -23,9 +23,11 @@ keeping it standalone lets pydmcsid serve as an independent validator oracle.
 # pylint: disable=too-many-instance-attributes,too-many-branches,too-many-statements
 # pylint: disable=too-many-return-statements,too-many-public-methods,too-many-lines
 
-from typing import Iterator, List, Tuple
+from typing import List, Tuple
 
+from pysidtracker import MemPlayer
 from pysidtracker.registers import (
+    PW_HI_REGS,
     SID_BASE,
     SID_FILTER_HI,
     SID_MODE_VOL,
@@ -39,6 +41,7 @@ from pydmcsid.reader import (
     a1_order_table_base,
     n95_order_table_base,
     order_table_base,
+    parse,
     pw_min_shift,
     release_clears_adsr,
     tail_d418_force,
@@ -46,9 +49,33 @@ from pydmcsid.reader import (
     v37_onset_ctrl,
 )
 
+_PW_HI = tuple(PW_HI_REGS)
 
-class Player:
-    """The DMC per-frame integer player over a loaded :class:`Song`."""
+
+class DmcPlayer(MemPlayer):
+    """The single DMC per-frame player, a :class:`~pysidtracker.MemPlayer`.
+
+    One class deriving from :class:`~pysidtracker.MemPlayer` owns the shared
+    machinery -- the flat 64 KiB memory mount, ``_wr`` SID writes, the post-init
+    snapshot, the diffing ``play_frame`` and the ``render_grid``/``iter_frames``
+    drivers -- so each DMC generation implements only ``_setup`` (resolve the
+    per-tune table bases from the resident code), ``_init`` (the tune's init) and
+    ``_frame`` (one play call), all private.  This class itself is the canonical
+    init-``$37`` engine; the later generations are private subclasses (init-``$1d``
+    :class:`PlayerV1D`, the reorganised ``$a1`` :class:`PlayerA1` and ``$95``
+    :class:`Player95` engines, and the ``$94a`` :class:`PlayerNN` / ``$937``
+    :class:`Player937` families).  Constructing ``DmcPlayer(source)`` dispatches to
+    the matching generation for ``source`` (a :class:`~pydmcsid.reader.Song` or
+    ``.sid``/``.prg`` bytes).
+
+    The 25-register grid (``$D400..$D418``, forward-filled) is
+    :meth:`~pysidtracker.MemPlayer.render_grid`; the pulse-width-high registers are
+    masked to 4 bits in :meth:`snapshot` so the grid matches the sidtrace oracle.
+    """
+
+    # A faithful integer transcription: the per-frame methods carry the player's
+    # exact branch/return density (the byte-exactness lives in those branches).
+    # pylint: disable=too-many-instance-attributes
 
     # Work cells whose authored addresses vary across DMC generations (the
     # id-string layout pushes them around).  These are the $37 defaults; the
@@ -61,86 +88,104 @@ class Player:
     order_table_op = constants.ORDER_TABLE_OP
     vib_seed_op = None  # v1d-only note-indexed vib-delta seed table operand
 
-    def __init__(self, song: Song, subtune: int = 0):
+    def __new__(cls, source, subtune: int = 0):
+        del subtune
+        if cls is DmcPlayer:
+            song = source if isinstance(source, Song) else parse(bytes(source))
+            cls = _engine_class(song)
+        return object.__new__(cls)
+
+    def __init__(self, source, subtune: int = 0):
+        song = source if isinstance(source, Song) else parse(bytes(source))
         self.song = song
-        self.m = bytearray(song.mem)  # working copy (mutated during playback)
-        self.load = song.base  # player origin (JMP-table base; the authored $1000)
+        self.base = self.load = song.base  # player origin (JMP-table base = $1000)
         self.rel = song.base - 0x1000  # the player is authored at $1000
-        self.subtune = subtune
-        self._writes: List[Tuple[int, int]] = []
+        self._setup(song)
+        # MemPlayer mounts the full image at load 0, seeds $D418, runs ``_init``
+        # then snapshots; the transcription mutates the mounted memory in place.
+        super().__init__(bytes(song.mem), 0, subtune)
+
+    @property
+    def m(self) -> bytearray:
+        """The mounted 64 KiB working memory (mutated during playback)."""
+        return self._mem
+
+    def _operand(self, code_off: int) -> int:
+        # The per-tune table-base operands are ABSOLUTE addresses the assembler
+        # already relinked to the tune's load address (the same relink that moves
+        # the JMP-table targets the anchor keys on), so they are used as-is -- NOT
+        # shifted by ``rel``.  ``rel`` only relocates the player's fixed work cells.
+        mem = self.song.mem
+        idx = (self.base + code_off) & 0xFFFF
+        return (mem[idx] | (mem[idx + 1] << 8)) & 0xFFFF
+
+    def _setup(self, song: Song) -> None:
+        """Resolve the init-$37 per-tune table bases from the resident code."""
+        mem = song.mem
         self._curpat: List[Tuple[int, int]] = [(0, 0)] * 3
         self.finished = False
-
-        def operand(code_off: int) -> int:
-            # The per-tune table-base operands are ABSOLUTE addresses the
-            # assembler already relinked to the tune's load address (the same
-            # relink that moves the JMP-table targets the anchor keys on), so
-            # they are used as-is -- NOT shifted by ``rel``.  ``rel`` only
-            # relocates the player's fixed work-RAM cells (see ``_a``).
-            idx = song.base + code_off
-            return (self.m[idx] | (self.m[idx + 1] << 8)) & 0xFFFF
-
-        self.b_freqlo = operand(constants.FREQ_LO_OP)
-        self.b_freqhi = operand(constants.FREQ_HI_OP)
-        self.b_instr = operand(constants.INSTR_OP)
-        self.b_pat_lo = operand(constants.PATTERN_LO_OP)
-        self.b_pat_hi = operand(constants.PATTERN_HI_OP)
+        self.b_freqlo = self._operand(constants.FREQ_LO_OP)
+        self.b_freqhi = self._operand(constants.FREQ_HI_OP)
+        self.b_instr = self._operand(constants.INSTR_OP)
+        self.b_pat_lo = self._operand(constants.PATTERN_LO_OP)
+        self.b_pat_hi = self._operand(constants.PATTERN_HI_OP)
         # Prefer the init-store-site signature (layout-independent); fall back to
         # the fixed code operand for the standard layouts if it is not found.
-        order_sig = order_table_base(self.m, song.base)
+        order_sig = order_table_base(mem, song.base)
         self.b_order_tbl = (
-            order_sig if order_sig is not None else operand(self.order_table_op)
+            order_sig if order_sig is not None else self._operand(self.order_table_op)
         )
-        self.b_pwtab = operand(constants.PW_TABLE_OP)
-        self.b_arp_ctrl = operand(constants.ARP_CTRL_OP)
-        self.b_arp_note = operand(constants.ARP_NOTE_OP)
-        self.b_filt_ctrl = operand(constants.FILT_CTRL_OP)
-        self.b_filt_step_lo = operand(constants.FILT_STEP_LO_OP)
-        self.b_filt_step_hi = operand(constants.FILT_STEP_HI_OP)
-        self.b_vibseed = operand(self.vib_seed_op) if self.vib_seed_op else 0
+        self.b_pwtab = self._operand(constants.PW_TABLE_OP)
+        self.b_arp_ctrl = self._operand(constants.ARP_CTRL_OP)
+        self.b_arp_note = self._operand(constants.ARP_NOTE_OP)
+        self.b_filt_ctrl = self._operand(constants.FILT_CTRL_OP)
+        self.b_filt_step_lo = self._operand(constants.FILT_STEP_LO_OP)
+        self.b_filt_step_hi = self._operand(constants.FILT_STEP_HI_OP)
+        self.b_vibseed = self._operand(self.vib_seed_op) if self.vib_seed_op else 0
         # Whether the note-release also zeroes AD/SR (an envelope-clearing hard-
         # restart), read from the actual release code -- both generations ship
         # clearing and non-clearing release helpers (see ``release_clears_adsr``).
-        self._release_clears_adsr = release_clears_adsr(self.m, song.base) is True
+        self._release_clears_adsr = release_clears_adsr(mem, song.base) is True
         # Right-shift forming the PW-sweep min bound ($124b): 4 for the stock
         # ``inst[2]>>4`` chain, 2 for the ``$17`` no-op-patched build (read from
         # the code, so hand-patched builds are modelled without regressing stock).
-        self._pw_min_shift = pw_min_shift(self.m, song.base)
+        self._pw_min_shift = pw_min_shift(mem, song.base)
         # A few builds redirect the play-body tail ($10AC STA $D417) to a helper
         # that also forces the $D418 filter-type nibble every frame; the forced
         # immediate (OR'd with $1717) is read from the code (``None`` = stock).
-        self._tail_d418 = tail_d418_force(self.m, song.base)
+        self._tail_d418 = tail_d418_force(mem, song.base)
         # Note-fetch CTRL immediate ($11D9 LDA #imm ; $11DB STA $D404,Y): the
         # init-$37 TEST-bit value ($08 stock, a per-tune code constant).  The
         # init-$1d body overrides this in ``_setup_cells`` (its onset is a
         # helper call that also writes AD/SR, or a ``BIT`` no-op).
-        self._onset_ctrl = v37_onset_ctrl(self.m, song.base)
+        self._onset_ctrl = v37_onset_ctrl(mem, song.base)
         self._onset_adsr = None
-        self._setup_cells(operand)
-        self.init()
+        self._setup_cells()
 
-    def _setup_cells(self, operand) -> None:
+    def _setup_cells(self) -> None:
         """Variant hook: resolve work cells whose authored address varies."""
 
     # -- helpers ---------------------------------------------------------
     def _a(self, addr: int) -> int:
         return (addr + self.rel) & 0xFFFF
 
-    def w(self, addr: int, val: int) -> None:
-        """Emit a SID register write (absolute $D4xx)."""
-        self._writes.append((addr & 0xFFFF, val & 0xFF))
-
     @staticmethod
-    def ptr(f8: int, f9: int) -> int:
+    def _ptr(f8: int, f9: int) -> int:
         """Compose a 16-bit zero-page pointer."""
         return (f9 << 8) | f8
 
+    def snapshot(self) -> List[int]:
+        """The 25 SID registers, pulse-width-high masked to 4 bits (oracle shape)."""
+        regs = super().snapshot()
+        for reg in _PW_HI:
+            regs[reg] &= 0x0F
+        return regs
+
     # -- init ($1037) ----------------------------------------------------
-    def init(self) -> None:
+    def _init(self, subtune: int) -> None:
         """Run the DMC init routine for the selected subtune."""
         m = self.m
-        self._writes = []
-        a = self.subtune & 0xFF
+        a = subtune & 0xFF
         y = (a << 3) & 0xFF
         ot = self.b_order_tbl
         for x in range(3):
@@ -149,7 +194,7 @@ class Player:
             y = (y + 2) & 0xFF
         m[self._a(0x1716)] = m[ot + y]
         m[self._a(0x1717)] = m[ot + y + 1]
-        self.w(SID_MODE_VOL, m[ot + y + 1])
+        self._wr(SID_MODE_VOL, m[ot + y + 1])
         self._init_extra()
         for x in range(0x86):
             m[self._a(0x1718) + x] = 0
@@ -157,20 +202,14 @@ class Player:
             m[self._a(0x100C) + x] = 1
             m[self._a(0x173B) + x] = 1
         for x in range(0x18):
-            self.w(SID_BASE + x, 0)
+            self._wr(SID_BASE + x, 0)
 
     def _init_extra(self) -> None:
         """Variant hook: extra init-time clears (v1d clears its new work cells)."""
 
-    @property
-    def init_writes(self) -> List[Tuple[int, int]]:
-        """The SID writes the init routine emitted (frame-0 baseline)."""
-        return list(self._writes)
-
     # -- per-frame ($1085) -----------------------------------------------
-    def play_frame(self) -> List[Tuple[int, int]]:
-        """Run one player tick; return ``(reg, value)`` writes (abs $D4xx)."""
-        self._writes = []
+    def _frame(self) -> None:
+        """Run one player tick (writes this frame's SID registers to memory)."""
         m = self.m
         a1718 = self._a(0x1718)
         m[a1718] = (m[a1718] - 1) & 0xFF
@@ -179,12 +218,11 @@ class Player:
         m[self._a(0x1720)] = 0
         for x in range(3):
             self._voice(x)
-        self.w(SID_FILTER_HI, m[self._a(0x171C)])
-        self.w(SID_RES_FILT, m[self._a(self.g_filt)] | m[self._a(0x1723)])
+        self._wr(SID_FILTER_HI, m[self._a(0x171C)])
+        self._wr(SID_RES_FILT, m[self._a(self.g_filt)] | m[self._a(0x1723)])
         if self._tail_d418 is not None:  # patched tail forces $D418 every frame
-            self.w(SID_MODE_VOL, self._tail_d418 | m[self._a(0x1717)])
+            self._wr(SID_MODE_VOL, self._tail_d418 | m[self._a(0x1717)])
         self.finished = all(m[self._a(0x100C) + x] == 0 for x in range(3))
-        return list(self._writes)
 
     # -- per-voice gate ($10B0) ------------------------------------------
     def _voice(self, x: int) -> None:
@@ -217,7 +255,7 @@ class Player:
                 m[a100c] = 0
                 return
             y = m[a1726]
-            a = m[self.ptr(f8, f9) + y]
+            a = m[self._ptr(f8, f9) + y]
             if a < 0x80:
                 break
             if a == 0xFF:
@@ -233,7 +271,7 @@ class Player:
             m[a172c] = a2
             m[a1726] = (m[a1726] + 1) & 0xFF
             y = (y + 1) & 0xFF
-            a = m[self.ptr(f8, f9) + y]
+            a = m[self._ptr(f8, f9) + y]
             break
         yp = a
         nf8 = m[self.b_pat_lo + yp]
@@ -253,7 +291,7 @@ class Player:
                 self._output_1591(x)
                 return
             y = m[a1729]
-            a = m[self.ptr(f8, f9) + y]
+            a = m[self._ptr(f8, f9) + y]
             if a >= 0x80:
                 res = self._special(x, f8, f9, a, y)
                 if res == "loop":
@@ -295,14 +333,14 @@ class Player:
         m[self._a(0x1741) + x] = a & 0x0F
         if (a & 0x10) == 0:
             y = (y + 1) & 0xFF
-            m[self._a(0x1744) + x] = (m[self.ptr(f8, f9) + y] + m[a172c]) & 0xFF
+            m[self._a(0x1744) + x] = (m[self._ptr(f8, f9) + y] + m[a172c]) & 0xFF
             y = (y + 1) & 0xFF
-            m[self._a(0x1747) + x] = (m[self.ptr(f8, f9) + y] + m[a172c]) & 0xFF
+            m[self._a(0x1747) + x] = (m[self._ptr(f8, f9) + y] + m[a172c]) & 0xFF
             m[a1729] = (m[a1729] + 2) & 0xFF
             self._note_idx(x, m[self._a(0x1744) + x])
             return "done"
         y = (y + 1) & 0xFF
-        m[self._a(0x1747) + x] = (m[self.ptr(f8, f9) + y] + m[a172c]) & 0xFF
+        m[self._a(0x1747) + x] = (m[self._ptr(f8, f9) + y] + m[a172c]) & 0xFF
         m[self._a(0x1744) + x] = m[self._a(self.c_note) + x]
         m[a1729] = (m[a1729] + 1) & 0xFF
         m[a173b] = m[a173e]
@@ -323,7 +361,7 @@ class Player:
         m[self._a(0x1729) + x] = (m[self._a(0x1729) + x] + 1) & 0xFF
         m[self._a(0x173B) + x] = m[self._a(0x173E) + x]
         yv = m[self._a(0x170D) + x]
-        self.w(SID_BASE + 4 + yv, self._onset_ctrl)
+        self._wr(SID_BASE + 4 + yv, self._onset_ctrl)
         m[self._a(0x100F) + x] = 0xFF
         m[self._a(0x174A) + x] = 0xFF
         f8, f9 = self._curpat[x]
@@ -332,7 +370,7 @@ class Player:
     def _endcheck(self, x: int, f8: int, f9: int) -> None:
         m = self.m
         y = m[self._a(0x1729) + x]
-        if m[self.ptr(f8, f9) + y] == 0xFF:
+        if m[self._ptr(f8, f9) + y] == 0xFF:
             m[self._a(0x1729) + x] = 0
             m[self._a(0x1726) + x] = (m[self._a(0x1726) + x] + 1) & 0xFF
 
@@ -385,7 +423,7 @@ class Player:
                 a2 = cv & 0x0F
                 a2 = (a2 << 4) & 0xFF
                 a2 = a2 | m[self._a(0x1717)]
-                self.w(SID_MODE_VOL, a2)
+                self._wr(SID_MODE_VOL, a2)
                 m[self._a(0x171C)] = m[self.b_filt_ctrl + 1 + yf]
                 m[self._a(0x171D)] = m[self.b_filt_ctrl + 2 + yf]
                 m[self._a(0x171E)] = m[self.b_filt_ctrl + 3 + yf]
@@ -406,8 +444,8 @@ class Player:
     def _emit_adsr(self, x: int, yv: int, ad: int, sr: int) -> None:
         """Write AD ($D405) / SR ($D406) at instrument-init ($1230/$1234)."""
         del x
-        self.w(SID_BASE + 6 + yv, sr)
-        self.w(SID_BASE + 5 + yv, ad)
+        self._wr(SID_BASE + 6 + yv, sr)
+        self._wr(SID_BASE + 5 + yv, ad)
 
     def _seed_vib(self, x: int) -> None:
         """Seed the vibrato scale/delta ($12EE): ``$178C = NoteFreqHi[note] >> 1``."""
@@ -424,9 +462,9 @@ class Player:
         a1786 = self._a(0x1786) + x
         if (m[self._a(0x177D) + x] & 0x80) != 0 and m[a1786] == 2:
             yv = m[self._a(0x170D) + x]
-            self.w(SID_BASE + yv, 0xFF)
-            self.w(SID_BASE + 1 + yv, 0xFF)
-            self.w(SID_BASE + 4 + yv, 0x81)
+            self._wr(SID_BASE + yv, 0xFF)
+            self._wr(SID_BASE + 1 + yv, 0xFF)
+            self._wr(SID_BASE + 4 + yv, 0x81)
             m[a1786] = (m[a1786] - 1) & 0xFF
             return
         self._sustain_1322(x)
@@ -460,8 +498,8 @@ class Player:
         m[self._a(0x100F) + x] = 0xFE
         if self._release_clears_adsr:
             yv = m[self._a(0x170D) + x]
-            self.w(SID_BASE + 5 + yv, 0)
-            self.w(SID_BASE + 6 + yv, 0)
+            self._wr(SID_BASE + 5 + yv, 0)
+            self._wr(SID_BASE + 6 + yv, 0)
 
     # -- 16-bit PW sweep ($134E) -----------------------------------------
     def _tick_134e(self, x: int) -> None:
@@ -578,9 +616,9 @@ class Player:
             hi = m[self._a(0x1732) + x] + (1 if lo > 0xFF else 0)
             m[self._a(0x1725)] = hi & 0xFF
             d = m[self._a(0x1724)] - m[self._a(0x1798) + x]
-            self.w(SID_BASE + yv, d & 0xFF)
+            self._wr(SID_BASE + yv, d & 0xFF)
             d2 = m[self._a(0x1725)] - m[self._a(0x179B) + x] - (1 if d < 0 else 0)
-            self.w(SID_BASE + 1 + yv, d2 & 0xFF)
+            self._wr(SID_BASE + 1 + yv, d2 & 0xFF)
             if (m[self._a(0x1777) + x] & 0x80) == 0:
                 lo = m[self._a(0x1798) + x] + m[self._a(0x1777) + x]
                 m[self._a(0x1798) + x] = lo & 0xFF
@@ -678,23 +716,23 @@ class Player:
         m = self.m
         yv = m[self._a(0x170D) + x]
         lo = m[self._a(0x172F) + x] + m[self._a(0x1735) + x]
-        self.w(SID_BASE + yv, lo & 0xFF)
+        self._wr(SID_BASE + yv, lo & 0xFF)
         hi = m[self._a(0x1732) + x] + m[self._a(0x1738) + x] + (1 if lo > 0xFF else 0)
-        self.w(SID_BASE + 1 + yv, hi & 0xFF)
+        self._wr(SID_BASE + 1 + yv, hi & 0xFF)
         self._out_1619(x)
 
     def _out_1619(self, x: int) -> None:
         m = self.m
         yv = m[self._a(0x170D) + x]
-        self.w(SID_BASE + 2 + yv, m[self._a(0x1750) + x])
-        self.w(SID_BASE + 3 + yv, m[self._a(0x1753) + x])
-        self.w(SID_BASE + 4 + yv, m[self._a(0x1780) + x] & m[self._a(0x100F) + x])
+        self._wr(SID_BASE + 2 + yv, m[self._a(0x1750) + x])
+        self._wr(SID_BASE + 3 + yv, m[self._a(0x1753) + x])
+        self._wr(SID_BASE + 4 + yv, m[self._a(0x1780) + x] & m[self._a(0x100F) + x])
 
 
-class PlayerV1D(Player):
+class PlayerV1D(DmcPlayer):
     """The later init-``$1d`` DMC play body (see :func:`pydmcsid.reader.dmc_variant`).
 
-    Same core engine as the init-``$37`` :class:`Player`, differing only in the
+    Same core engine as the init-``$37`` :class:`DmcPlayer`, differing only in the
     localized ways the $1d body re-encoded the pattern stream and restructured
     note onset (transcribed from the disassembly):
 
@@ -714,26 +752,27 @@ class PlayerV1D(Player):
     order_table_op = constants.ORDER_TABLE_OP_V1D
     vib_seed_op = constants.VIB_SEED_OP
 
-    def _setup_cells(self, operand) -> None:
+    def _setup_cells(self) -> None:
+        mem = self.song.mem
         # The $1d sub-layouts relocate a 9-cell block (note[3], inst[3], filt,
         # vib-toggle, bend) as a unit; its base is read from the note-store
         # operand at $11A6.  inst=note+3, filt=note+6, toggle=note+7, bend=note+8.
-        note = operand(constants.NOTE_CELL_OP) - self.rel
+        note = self._operand(constants.NOTE_CELL_OP) - self.rel
         self.c_note = note & 0xFFFF
         self.c_inst = (note + 3) & 0xFFFF
         self.g_filt = (note + 6) & 0xFFFF
         self.g_vibtoggle = (note + 7) & 0xFFFF
         self.g_bendscratch = (note + 8) & 0xFFFF
         # rest/tie/legato tail ($1180): full steady tick ($1322) or re-output only.
-        tail = (operand(constants.REST_TAIL_OP) - self.load) & 0xFFFF
+        tail = (self._operand(constants.REST_TAIL_OP) - self.load) & 0xFFFF
         self._rest_via_1322 = tail == constants.REST_TAIL_1322
         # hard-restart burst FREQ immediate ($130A: LDA #imm) -- $ff for nearly
         # all tunes, but a per-tune code constant.
-        self._burst_imm = self.m[self.load + constants.BURST_IMM_REL]
+        self._burst_imm = mem[self.load + constants.BURST_IMM_REL]
         # Note-onset SID writes ($11DB helper call): the stock ``JSR $17FB``
         # emits CTRL then AD=SR=$0F; a ``BIT`` no-op patch emits nothing (the
         # onset slips a frame).  Read from the code (see ``v1d_note_onset``).
-        self._onset_ctrl, self._onset_adsr = v1d_note_onset(self.m, self.load)
+        self._onset_ctrl, self._onset_adsr = v1d_note_onset(mem, self.load)
 
     def _rest_tail(self, x: int) -> None:
         """The shared $117D tail: $1322 steady tick or $1591 re-output per build."""
@@ -751,7 +790,7 @@ class PlayerV1D(Player):
         m = self.m
         a1729 = self._a(0x1729) + x
         a172c = self._a(0x172C) + x
-        ptr = self.ptr(f8, f9)
+        ptr = self._ptr(f8, f9)
         guard = 0
         while True:
             guard += 1
@@ -808,7 +847,7 @@ class PlayerV1D(Player):
         m = self.m
         a1729 = self._a(0x1729) + x
         a172c = self._a(0x172C) + x
-        ptr = self.ptr(f8, f9)
+        ptr = self._ptr(f8, f9)
         a &= 0x1F
         m[self._a(0x1741) + x] = a & 0x0F
         if (a & 0x10) == 0:
@@ -829,7 +868,7 @@ class PlayerV1D(Player):
     def _endcheck(self, x: int, f8: int, f9: int) -> None:
         m = self.m
         y = m[self._a(0x1729) + x]
-        if m[self.ptr(f8, f9) + y] == 0x7F:
+        if m[self._ptr(f8, f9) + y] == 0x7F:
             m[self._a(0x1729) + x] = 0
             m[self._a(0x1726) + x] = (m[self._a(0x1726) + x] + 1) & 0xFF
             m[self._a(0x17B0) + x] = 0
@@ -852,9 +891,9 @@ class PlayerV1D(Player):
             m[self._a(0x1700 + off) + x] = 0
         yv = m[self._a(0x170D) + x]
         if self._onset_ctrl is not None:  # $17fb: CTRL=$08, AD=$0f, SR=$0f
-            self.w(SID_BASE + 4 + yv, self._onset_ctrl)
-            self.w(SID_BASE + 5 + yv, self._onset_adsr)
-            self.w(SID_BASE + 6 + yv, self._onset_adsr)
+            self._wr(SID_BASE + 4 + yv, self._onset_ctrl)
+            self._wr(SID_BASE + 5 + yv, self._onset_adsr)
+            self._wr(SID_BASE + 6 + yv, self._onset_adsr)
         m[self._a(0x100F) + x] = 0xFF
         m[self._a(0x174A) + x] = 0xFF
         self._endcheck(x, f8, f9)
@@ -871,8 +910,8 @@ class PlayerV1D(Player):
         over = self.m[self._a(0x17B3) + x]  # $184b sustain-nibble override
         if over != 0:
             sr = ((over << 4) & 0xF0) | (sr & 0x0F)
-        self.w(SID_BASE + 6 + yv, sr)
-        self.w(SID_BASE + 5 + yv, ad)
+        self._wr(SID_BASE + 6 + yv, sr)
+        self._wr(SID_BASE + 5 + yv, ad)
 
     def _seed_vib(self, x: int) -> None:
         yn = self.m[self._a(self.c_note) + x]  # $12EE: $1792 = VibScale[note]
@@ -884,9 +923,9 @@ class PlayerV1D(Player):
             m[self._a(0x1792) + x] = 0
         if (m[self._a(0x177D) + x] & 0x80) != 0:  # $1300: hard-restart burst now
             yv = m[self._a(0x170D) + x]
-            self.w(SID_BASE + yv, self._burst_imm)
-            self.w(SID_BASE + 1 + yv, self._burst_imm)
-            self.w(SID_BASE + 4 + yv, 0x81)
+            self._wr(SID_BASE + yv, self._burst_imm)
+            self._wr(SID_BASE + 1 + yv, self._burst_imm)
+            self._wr(SID_BASE + 4 + yv, 0x81)
             return
         self._output_1591(x)
 
@@ -906,12 +945,12 @@ class PlayerV1D(Player):
         self._output_1591(x)
 
 
-class PlayerA1:
+class PlayerA1(DmcPlayer):
     """The reorganised ``$a1`` DMC engine (see :func:`pydmcsid.reader.dmc_variant`).
 
     A genuinely different, V5-era player body (play routine at ``base+$a1``, not
     ``base+$85``) with its own work-RAM map, transcribed from the 6502.  Notable
-    departures from the ``base+$85`` engine (:class:`Player`):
+    departures from the ``base+$85`` engine (:class:`DmcPlayer`):
 
     * per-voice state lives in a ``$17cf..$1845`` block (orderptr ``$17cf/$17d2``,
       order index ``$17d5``, pattern index ``$17d8``, duration ``$17db/$17de``,
@@ -934,65 +973,44 @@ class PlayerA1:
     * two per-build patchable release stores (``$16c7`` SR-clear, ``$16e3``
       gate-off mask) read from the opcode (``STA`` vs ``BIT`` no-op).
 
-    Conforms to the :class:`Player` playback interface (``init_writes`` +
-    ``play_frame``) so :func:`iter_frames` drives it identically.
+    Conforms to the :class:`DmcPlayer` playback interface (``_setup`` / ``_init`` /
+    ``_frame``) so :meth:`~pysidtracker.MemPlayer.render_grid` drives it identically.
     """
 
-    # pylint: disable=too-many-instance-attributes
-
-    def __init__(self, song: Song, subtune: int = 0):
-        self.song = song
-        self.m = bytearray(song.mem)
+    def _setup(self, song: Song) -> None:
+        mem = song.mem
         base = song.base
-        self.base = base
-        self.rel = base - 0x1000  # the player is authored at $1000
-        self.sub = subtune & 0xFF
-        self._writes: List[Tuple[int, int]] = []
-        self._sid_setup: List[Tuple[int, int]] = []  # startup-gate frame writes
         self.finished = False
         self.f8 = 0  # pattern/orderlist pointer (zero-page $f8/$f9)
         self.f9 = 0
-        m = self.m
-
-        def op(off: int) -> int:
-            idx = base + off
-            return (m[idx] | (m[idx + 1] << 8)) & 0xFFFF
-
-        order = a1_order_table_base(m, base)
+        order = a1_order_table_base(mem, base)
         self.b_order = order if order is not None else 0
-        self.b_patlo = op(constants.A1_PATTERN_LO_OP)
-        self.b_pathi = op(constants.A1_PATTERN_HI_OP)
-        self.b_inst = op(constants.A1_INST_OP)
-        self.b_wtctrl = op(constants.A1_WT_CTRL_OP)
-        self.b_wtarg = op(constants.A1_WT_ARG_OP)
-        self.b_pwa = op(constants.A1_PW_A_OP)
-        self.b_pwb = op(constants.A1_PW_B_OP)
-        self.b_filta = op(constants.A1_FILT_A_OP)
-        self.b_filtb = op(constants.A1_FILT_B_OP)
+        self.b_patlo = self._operand(constants.A1_PATTERN_LO_OP)
+        self.b_pathi = self._operand(constants.A1_PATTERN_HI_OP)
+        self.b_inst = self._operand(constants.A1_INST_OP)
+        self.b_wtctrl = self._operand(constants.A1_WT_CTRL_OP)
+        self.b_wtarg = self._operand(constants.A1_WT_ARG_OP)
+        self.b_pwa = self._operand(constants.A1_PW_A_OP)
+        self.b_pwb = self._operand(constants.A1_PW_B_OP)
+        self.b_filta = self._operand(constants.A1_FILT_A_OP)
+        self.b_filtb = self._operand(constants.A1_FILT_B_OP)
         self.b_freqlo = (base + constants.A1_FREQ_LO_REL) & 0xFFFF
         self.b_freqhi = (base + constants.A1_FREQ_HI_REL) & 0xFFFF
         # Per-build patchable release SR-clear ($16c7 STA $d406,Y == $99).
-        self._rel_clears_sr = m[(base + constants.A1_REL_SR_CLEAR_REL) & 0xFFFF] == 0x99
-        self.init()
-
-    def _a(self, addr: int) -> int:
-        return (addr + self.rel) & 0xFFFF
-
-    def w(self, reg: int, val: int) -> None:
-        """Emit a SID register write (absolute $D4xx)."""
-        self._writes.append((reg & 0xFFFF, val & 0xFF))
+        self._rel_clears_sr = (
+            mem[(base + constants.A1_REL_SR_CLEAR_REL) & 0xFFFF] == 0x99
+        )
 
     def _ld(self, y: int) -> int:
         """``($f8),Y`` pattern/orderlist byte read (f8/f9 are absolute)."""
         return self.m[(((self.f9 << 8) | self.f8) + (y & 0xFF)) & 0xFFFF]
 
     # -- init ($1040) ----------------------------------------------------
-    def init(self) -> None:
+    def _init(self, subtune: int) -> None:
         """Run the ``$a1`` init for the selected subtune."""
         m = self.m
         a = self._a
-        self._writes = []
-        y = (self.sub * 8) & 0xFF
+        y = (subtune * 8) & 0xFF
         for x in range(3):
             m[a(0x17CF) + x] = m[(self.b_order + y) & 0xFFFF]
             m[a(0x17D2) + x] = m[(self.b_order + y + 1) & 0xFFFF]
@@ -1007,44 +1025,33 @@ class PlayerA1:
             m[a(0x17DB) + x] = 1
             m[a(0x1006) + x] = 1
         for i in range(0x18):
-            self.w(SID_BASE + i, 0)
-        self.w(SID_BASE + 0x04, 0x08)
-        self.w(SID_BASE + 0x0B, 0x08)
-        self.w(SID_BASE + 0x12, 0x08)
+            self._wr(SID_BASE + i, 0)
+        # The $a1 engine never initializes $D418: it composes volume from a global
+        # fade cell (init-cleared to 0), so the libsidplayfp PSID driver's cold-start
+        # $D418=$0F persists until the body's first volume write.  Seed it so the
+        # frame-0 baseline matches the sidtrace oracle (the $D418 driver default).
+        self._wr(SID_MODE_VOL, 0x0F)
+        self._wr(SID_BASE + 0x04, 0x08)
+        self._wr(SID_BASE + 0x0B, 0x08)
+        self._wr(SID_BASE + 0x12, 0x08)
         m[a(0x1842)] = 2
-        # The two startup-gate play frames ($1842) run before real playback and
-        # touch no SID register (the play body JMPs past its writes at $10ac), so
-        # the chip holds this init register state for those frames.  Keep the
-        # writes so ``play_frame`` re-emits them for the gate frames -- otherwise
-        # they are silent and the per-VBI write framing (which anchors frame 0 on
-        # the first post-init write) would drop them, shifting playback two frames
-        # early relative to the chip.
-        self._sid_setup = list(self._writes)
-
-    @property
-    def init_writes(self) -> List[Tuple[int, int]]:
-        """The SID writes the init routine emitted (frame-0 baseline)."""
-        return list(self._writes)
 
     # -- play ($10a1) ----------------------------------------------------
-    def play_frame(self) -> List[Tuple[int, int]]:
-        """Run one player tick; return ``(reg, value)`` writes (abs $D4xx)."""
-        self._writes = []
+    def _frame(self) -> None:
+        """Run one player tick (writes this frame's SID registers to memory)."""
         m = self.m
         a = self._a
         if m[a(0x1842)] != 0:  # two-frame startup gate: chip holds the init state
-            m[a(0x1842)] = (m[a(0x1842)] - 1) & 0xFF
-            self._writes = list(self._sid_setup)
-            return list(self._writes)
+            m[a(0x1842)] = (m[a(0x1842)] - 1) & 0xFF  # (touches no SID register)
+            return
         m[a(0x1013)] = (m[a(0x1013)] - 1) & 0xFF  # global tempo divider
         if m[a(0x1013)] & 0x80:
             m[a(0x1013)] = m[a(0x1012)]
         for x in range(3):
             self._voice(x)
-        self.w(SID_BASE + 0x15, m[a(0x1017)])  # filter cutoff lo
-        self.w(SID_BASE + 0x16, m[a(0x1016)])  # filter cutoff hi
+        self._wr(SID_BASE + 0x15, m[a(0x1017)])  # filter cutoff lo
+        self._wr(SID_BASE + 0x16, m[a(0x1016)])  # filter cutoff hi
         self.finished = all(m[a(0x1006) + x] == 0 for x in range(3))
-        return list(self._writes)
 
     # -- per-voice gate ($10dd) ------------------------------------------
     def _voice(self, x: int) -> None:
@@ -1151,7 +1158,7 @@ class PlayerA1:
                 return
             if v == 0xF9:  # filter res ($d417) + volume-hi ($1015)
                 b = self._ld((y + 1) & 0xFF)
-                self.w(SID_BASE + 0x17, b if b == 0 else (((b << 4) & 0xFF) | 0x04))
+                self._wr(SID_BASE + 0x17, b if b == 0 else (((b << 4) & 0xFF) | 0x04))
                 m[a(0x1015)] = b & 0xF0
                 m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
                 continue
@@ -1160,11 +1167,11 @@ class PlayerA1:
                 m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
                 continue
             if v == 0xF2:  # direct AD
-                self.w(SID_BASE + 0x05 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
+                self._wr(SID_BASE + 0x05 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
                 m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
                 continue
             if v == 0xF1:  # direct SR
-                self.w(SID_BASE + 0x06 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
+                self._wr(SID_BASE + 0x06 + m[a(0x1009) + x], self._ld((y + 1) & 0xFF))
                 m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 2) & 0xFF
                 continue
             if v == 0xF7:  # volume fade-up speed
@@ -1211,14 +1218,14 @@ class PlayerA1:
         yv = m[a(0x1009) + x]
         if m[a(0x17E7) + x] != 0:  # sustain-nibble override into SR
             sr = (sr & 0x0F) | ((m[a(0x17E7) + x] << 4) & 0xFF)
-        self.w(SID_BASE + 0x06 + yv, sr)
-        self.w(SID_BASE + 0x05 + yv, ad)
+        self._wr(SID_BASE + 0x06 + yv, sr)
+        self._wr(SID_BASE + 0x05 + yv, ad)
         m[a(0x17DB) + x] = m[a(0x17DE) + x]
         m[a(0x1808) + x] = 0
-        self.w(SID_BASE + 0x04 + yv, 0x09)  # gate+test
+        self._wr(SID_BASE + 0x04 + yv, 0x09)  # gate+test
         m[a(0x180B) + x] = 0x09
-        self.w(SID_BASE + 0x00 + yv, 0)
-        self.w(SID_BASE + 0x01 + yv, 0)
+        self._wr(SID_BASE + 0x00 + yv, 0)
+        self._wr(SID_BASE + 0x01 + yv, 0)
         m[a(0x17D8) + x] = (m[a(0x17D8) + x] + 1) & 0xFF
         v = self._ld(m[a(0x17D8) + x])
         m[a(0x181D) + x] = v
@@ -1239,7 +1246,7 @@ class PlayerA1:
         m = self.m
         a = self._a
         m[a(0x180B) + x] = 0
-        self.w(SID_BASE + 0x18, m[a(0x1015)] | m[a(0x101B)])
+        self._wr(SID_BASE + 0x18, m[a(0x1015)] | m[a(0x101B)])
         y = (m[a(0x17E1) + x] * 8) & 0xFF
         m[a(0x17FC) + x] = self.m[(self.b_inst + y + 5) & 0xFFFF]  # vib delay
         m[a(0x17FF) + x] = self.m[(self.b_inst + y + 6) & 0xFFFF]  # vib period
@@ -1480,7 +1487,7 @@ class PlayerA1:
             m[a(0x101B)] = (m[a(0x101B)] + (1 if lo > 0xFF else 0)) & 0xFF
             if m[a(0x101B)] == 0x0F:
                 m[a(0x1018)] = 0
-        self.w(SID_BASE + 0x18, m[a(0x101B)] | m[a(0x1015)])
+        self._wr(SID_BASE + 0x18, m[a(0x101B)] | m[a(0x1015)])
         self._wt_output(x)
 
     def _wt_output(self, x: int) -> None:  # $165b: wavetable step then output
@@ -1496,14 +1503,14 @@ class PlayerA1:
         if term not in (0xFE, 0xF4, 0xFA, 0xF2, 0xF1):
             self._release(x, term)
         lo = m[a(0x180E) + x] + m[a(0x1835) + x]
-        self.w(SID_BASE + 0x00 + yv, lo & 0xFF)
-        self.w(
+        self._wr(SID_BASE + 0x00 + yv, lo & 0xFF)
+        self._wr(
             SID_BASE + 0x01 + yv,
             (m[a(0x1811) + x] + m[a(0x1838) + x] + (1 if lo > 0xFF else 0)) & 0xFF,
         )
-        self.w(SID_BASE + 0x02 + yv, m[a(0x1820) + x])
-        self.w(SID_BASE + 0x03 + yv, m[a(0x1823) + x])
-        self.w(SID_BASE + 0x04 + yv, m[a(0x1814) + x] & m[a(0x1817) + x])
+        self._wr(SID_BASE + 0x02 + yv, m[a(0x1820) + x])
+        self._wr(SID_BASE + 0x03 + yv, m[a(0x1823) + x])
+        self._wr(SID_BASE + 0x04 + yv, m[a(0x1814) + x] & m[a(0x1817) + x])
 
     def _release(self, x: int, term: int) -> None:  # $16b9 chain
         m = self.m
@@ -1522,13 +1529,13 @@ class PlayerA1:
         a = self._a
         if m[a(0x17DB) + x] == 1:  # last frame: clear SR (if not patched out)
             if self._rel_clears_sr:
-                self.w(SID_BASE + 0x06 + yv, 0)
+                self._wr(SID_BASE + 0x06 + yv, 0)
             return
         if m[a(0x17DB) + x] == 2 and m[a(0x1013)] == 0:  # gate-off mask
             m[a(0x1817) + x] = 0xF6
 
 
-class Player95:
+class Player95(DmcPlayer):
     """The compact, self-modifying ``$95`` DMC engine (an earlier lineage).
 
     Play routine at ``base+$95`` (the dispatch play-JMP target), with its own
@@ -1558,50 +1565,31 @@ class Player95:
     * the note-freq tables sit at a FIXED offset (``base+$719`` lo / ``base+$779``
       hi) ahead of the work RAM, so they are base-relative constants.
 
-    Conforms to the :class:`Player` playback interface (``init_writes`` +
-    ``play_frame``).
+    Conforms to the :class:`DmcPlayer` playback interface (``_setup`` / ``_init`` /
+    ``_frame``).
     """
 
-    # pylint: disable=too-many-instance-attributes
-
-    def __init__(self, song: Song, subtune: int = 0):
-        self.song = song
-        self.m = bytearray(song.mem)
+    def _setup(self, song: Song) -> None:
+        mem = song.mem
         base = song.base
-        self.base = base
-        self.rel = base - 0x1000  # the player is authored at $1000
-        self.sub = subtune & 0xFF
-        self._writes: List[Tuple[int, int]] = []
         self.finished = False
         self.fa = 0  # pattern/orderlist pointer (zero-page $fa/$fb)
         self.fb = 0
-        m = self.m
-
-        def op(off: int) -> int:
-            idx = base + off
-            return (m[idx] | (m[idx + 1] << 8)) & 0xFFFF
-
-        order = n95_order_table_base(m, base)
-        self.b_order = order if order is not None else op(constants.N95_ORDER_OP)
-        self.b_patlo = op(constants.N95_PATTERN_LO_OP)
-        self.b_pathi = op(constants.N95_PATTERN_HI_OP)
-        self.b_inst = op(constants.N95_INST_OP)
-        self.b_wtctrl = op(constants.N95_WT_CTRL_OP)
-        self.b_wtarg = op(constants.N95_WT_ARG_OP)
-        self.b_pwa = op(constants.N95_PW_A_OP)
-        self.b_pwb = op(constants.N95_PW_B_OP)
-        self.b_filta = op(constants.N95_FILT_A_OP)
-        self.b_filtb = op(constants.N95_FILT_B_OP)
+        order = n95_order_table_base(mem, base)
+        self.b_order = (
+            order if order is not None else self._operand(constants.N95_ORDER_OP)
+        )
+        self.b_patlo = self._operand(constants.N95_PATTERN_LO_OP)
+        self.b_pathi = self._operand(constants.N95_PATTERN_HI_OP)
+        self.b_inst = self._operand(constants.N95_INST_OP)
+        self.b_wtctrl = self._operand(constants.N95_WT_CTRL_OP)
+        self.b_wtarg = self._operand(constants.N95_WT_ARG_OP)
+        self.b_pwa = self._operand(constants.N95_PW_A_OP)
+        self.b_pwb = self._operand(constants.N95_PW_B_OP)
+        self.b_filta = self._operand(constants.N95_FILT_A_OP)
+        self.b_filtb = self._operand(constants.N95_FILT_B_OP)
         self.b_freqlo = (base + constants.N95_FREQ_LO_REL) & 0xFFFF
         self.b_freqhi = (base + constants.N95_FREQ_HI_REL) & 0xFFFF
-        self.init()
-
-    def _a(self, addr: int) -> int:
-        return (addr + self.rel) & 0xFFFF
-
-    def w(self, reg: int, val: int) -> None:
-        """Emit a SID register write (absolute $D4xx)."""
-        self._writes.append((reg & 0xFFFF, val & 0xFF))
 
     def _ld(self, y: int) -> int:
         """``($fa),Y`` pattern/orderlist byte read (fa/fb are absolute)."""
@@ -1612,12 +1600,11 @@ class Player95:
         return self.m[self._a(0x100C) + x]
 
     # -- init ($1040) ----------------------------------------------------
-    def init(self) -> None:
+    def _init(self, subtune: int) -> None:
         """Run the ``$95`` init for the selected subtune."""
         m = self.m
         a = self._a
-        self._writes = []
-        y = (self.sub * 2) & 0xFF
+        y = (subtune * 2) & 0xFF
         for x in range(3):
             m[a(0x17D9) + x] = m[(self.b_order + y) & 0xFFFF]
             m[a(0x17DC) + x] = m[(self.b_order + y + 1) & 0xFFFF]
@@ -1632,20 +1619,14 @@ class Player95:
             m[a(0x17E5) + x] = 2
             m[a(0x1009) + x] = 2
         for i in range(0x18):
-            self.w(SID_BASE + i, 0)
-        self.w(SID_BASE + 0x04, 0x08)  # test bit on each voice's CTRL
-        self.w(SID_BASE + 0x0B, 0x08)
-        self.w(SID_BASE + 0x12, 0x08)
-
-    @property
-    def init_writes(self) -> List[Tuple[int, int]]:
-        """The SID writes the init routine emitted (frame-0 baseline)."""
-        return list(self._writes)
+            self._wr(SID_BASE + i, 0)
+        self._wr(SID_BASE + 0x04, 0x08)  # test bit on each voice's CTRL
+        self._wr(SID_BASE + 0x0B, 0x08)
+        self._wr(SID_BASE + 0x12, 0x08)
 
     # -- play ($1095) ----------------------------------------------------
-    def play_frame(self) -> List[Tuple[int, int]]:
-        """Run one player tick; return ``(reg, value)`` writes (abs $D4xx)."""
-        self._writes = []
+    def _frame(self) -> None:
+        """Run one player tick (writes this frame's SID registers to memory)."""
         m = self.m
         a = self._a
         m[a(0x1016)] = (m[a(0x1016)] - 1) & 0xFF  # global tempo divider
@@ -1657,9 +1638,8 @@ class Player95:
             for x in range(3):
                 self._tick_1373(x)
         # filter cutoff hi = global accumulator + per-tune base offset
-        self.w(SID_BASE + 0x16, (m[a(0x1019)] + m[a(0x1853)]) & 0xFF)
+        self._wr(SID_BASE + 0x16, (m[a(0x1019)] + m[a(0x1853)]) & 0xFF)
         self.finished = all(m[a(0x1009) + x] == 0 for x in range(3))
-        return list(self._writes)
 
     # -- row advance ($10e1) ---------------------------------------------
     def _advance(self, x: int) -> None:
@@ -1769,7 +1749,7 @@ class Player95:
             if v == 0xF9:  # filter res ($d417) + volume-hi ($1018) + sweep gate
                 b = self._ld((y + 1) & 0xFF)
                 m[a(0x1857)] = b  # $1857 also gates the global filter sweep
-                self.w(SID_BASE + 0x17, b if b == 0 else (((b << 4) & 0xFF) | 0x04))
+                self._wr(SID_BASE + 0x17, b if b == 0 else (((b << 4) & 0xFF) | 0x04))
                 m[a(0x1018)] = b & 0xF0
                 m[a(0x17E2) + x] = (y + 2) & 0xFF
                 continue
@@ -1778,11 +1758,11 @@ class Player95:
                 m[a(0x17E2) + x] = (y + 2) & 0xFF
                 continue
             if v == 0xF2:  # direct AD
-                self.w(SID_BASE + 0x05 + self._yv(x), self._ld((y + 1) & 0xFF))
+                self._wr(SID_BASE + 0x05 + self._yv(x), self._ld((y + 1) & 0xFF))
                 m[a(0x17E2) + x] = (m[a(0x17E2) + x] + 2) & 0xFF
                 continue
             if v == 0xF1:  # direct SR
-                self.w(SID_BASE + 0x06 + self._yv(x), self._ld((y + 1) & 0xFF))
+                self._wr(SID_BASE + 0x06 + self._yv(x), self._ld((y + 1) & 0xFF))
                 m[a(0x17E2) + x] = (m[a(0x17E2) + x] + 2) & 0xFF
                 continue
             if v == 0xF7:  # volume fade-up speed
@@ -1856,12 +1836,12 @@ class Player95:
         yv = self._yv(x)
         if m[a(0x17F1) + x] != 0:  # sustain override: SR hi nibble, AD forced 0
             sr = (sr & 0x0F) | ((m[a(0x17F1) + x] << 4) & 0xFF)
-            self.w(SID_BASE + 0x06 + yv, sr)
-            self.w(SID_BASE + 0x05 + yv, 0)
+            self._wr(SID_BASE + 0x06 + yv, sr)
+            self._wr(SID_BASE + 0x05 + yv, 0)
         else:
-            self.w(SID_BASE + 0x06 + yv, sr)
-            self.w(SID_BASE + 0x05 + yv, ad)
-        self.w(SID_BASE + 0x04 + yv, 0x09)  # gate+test
+            self._wr(SID_BASE + 0x06 + yv, sr)
+            self._wr(SID_BASE + 0x05 + yv, ad)
+        self._wr(SID_BASE + 0x04 + yv, 0x09)  # gate+test
         m[a(0x1815) + x] = 0x09  # note-init pending
 
     # -- steady tick / note-init dispatch ($1373) ------------------------
@@ -2112,7 +2092,7 @@ class Player95:
             m[a(0x101A)] = (m[a(0x101A)] + (1 if lo > 0xFF else 0)) & 0xFF
             if m[a(0x101A)] == 0x0F:
                 m[a(0x1854)] = 0
-        self.w(SID_BASE + 0x18, m[a(0x101A)] | m[a(0x1018)])
+        self._wr(SID_BASE + 0x18, m[a(0x101A)] | m[a(0x1018)])
         self._wt_output(x)
 
     def _wt_output(self, x: int) -> None:  # $1654: wt step then output
@@ -2136,14 +2116,14 @@ class Player95:
         yv = self._yv(x)
         self._release(x, m[a(0x1827) + x])
         lo = m[a(0x1818) + x] + m[a(0x183C) + x]
-        self.w(SID_BASE + 0x00 + yv, lo & 0xFF)
-        self.w(
+        self._wr(SID_BASE + 0x00 + yv, lo & 0xFF)
+        self._wr(
             SID_BASE + 0x01 + yv,
             (m[a(0x181B) + x] + m[a(0x183F) + x] + (1 if lo > 0xFF else 0)) & 0xFF,
         )
-        self.w(SID_BASE + 0x02 + yv, m[a(0x182A) + x])
-        self.w(SID_BASE + 0x03 + yv, m[a(0x182D) + x])
-        self.w(SID_BASE + 0x04 + yv, m[a(0x181E) + x] & m[a(0x1821) + x])
+        self._wr(SID_BASE + 0x02 + yv, m[a(0x182A) + x])
+        self._wr(SID_BASE + 0x03 + yv, m[a(0x182D) + x])
+        self._wr(SID_BASE + 0x04 + yv, m[a(0x181E) + x] & m[a(0x1821) + x])
 
     def _release(self, x: int, term: int) -> None:  # $16aa chain
         m = self.m
@@ -2160,7 +2140,7 @@ class Player95:
             if m[a(0x17F4) + x] != 0:
                 return
         if m[a(0x17E5) + x] == 1:  # last frame of the note: clear SR
-            self.w(SID_BASE + 0x06 + yv, 0)
+            self._wr(SID_BASE + 0x06 + yv, 0)
             return
         if m[a(0x17E5) + x] == 2 and m[a(0x1016)] == 0:  # gate-off mask on penult.
             m[a(0x1821) + x] = 0xF6
@@ -2196,7 +2176,7 @@ class Player937(PlayerNN):
     call) that runs the resident MAIN play (the standard init-``$1d`` body, once
     every N calls) or, on the intermediate calls, a reorganised SECONDARY body.
     The oracle samples one wrapper call per grid row (no CIA emulation), so
-    :meth:`play_frame` reproduces exactly one wrapper call.
+    :meth:`_frame` reproduces exactly one wrapper call.
 
     Both the main and the refresh path drive the same modelled body, so playback
     inherits :class:`PlayerV1D` wholesale; only the per-frame loop is new.  The
@@ -2206,13 +2186,13 @@ class Player937(PlayerNN):
     tail -- so filter sweeps and the tempo advance only step on the main call.
     """
 
-    def __init__(self, song: Song, subtune: int = 0):
-        super().__init__(song, subtune=subtune)
-        m = self.m
+    def _setup(self, song: Song) -> None:
+        super()._setup(song)
         # The wrapper (header play/init) is appended past the resident player; its
         # divider counter cell + reload/seed immediates float with the build, so
         # they are read from the wrapper code rather than assumed.
-        self._ctr = (m[song.play + 1] | (m[song.play + 2] << 8)) & 0xFFFF
+        mem = song.mem
+        self._ctr = (mem[song.play + 1] | (mem[song.play + 2] << 8)) & 0xFFFF
         self._reload = self._wrap_imm(song.play)  # counter reload (divider period)
         self._ms = self._wrap_imm(song.init)  # counter seed (from the wrapper init)
 
@@ -2222,7 +2202,7 @@ class Player937(PlayerNN):
         Scans the short wrapper for the ``A2 imm : 8E <counter>`` pair; falls back
         to 1 (the observed seed) if absent, so a malformed wrapper never raises.
         """
-        m = self.m
+        m = self.song.mem
         hi = min(len(m), lo + constants.NN937_WRAP_SCAN)
         for i in range(lo, hi - 4):
             if (
@@ -2233,57 +2213,45 @@ class Player937(PlayerNN):
                 return m[i + 1]
         return 1
 
-    def play_frame(self) -> List[Tuple[int, int]]:
+    def _frame(self) -> None:
         """Run one wrapper call: the resident main play, or the refresh body."""
         self._ms = (self._ms - 1) & 0xFF
         if self._ms != 0:
-            return self._refresh_937()
+            self._refresh_937()
+            return
         self._ms = self._reload
-        return super().play_frame()
+        super()._frame()
 
-    def _refresh_937(self) -> List[Tuple[int, int]]:
+    def _refresh_937(self) -> None:
         m = self.m
         a = self._a
         if m[a(constants.NN937_FLAG)] == 0:  # disabled -> the full play runs anyway
-            return super().play_frame()
-        self._writes = []
+            super()._frame()
+            return
         phase = m[a(constants.NN937_PHASE)]
         for x, mask in enumerate(constants.NN937_MASK):
             if m[(a(mask) + phase) & 0xFFFF] != 0:
                 self._jmp_11f9(x)
         phase += 1
         m[a(constants.NN937_PHASE)] = 0 if phase == constants.NN937_MOD else phase
-        return list(self._writes)
 
 
-def _player_for(song: Song, subtune: int):
-    """Instantiate the play body matching ``song``'s DMC generation."""
+def _engine_class(song: Song):
+    """The :class:`DmcPlayer` subclass matching ``song``'s DMC generation."""
     variant = song.variant()
     if variant == "a1":
-        return PlayerA1(song, subtune=subtune)
+        return PlayerA1
     if variant == "n95":
-        return Player95(song, subtune=subtune)
+        return Player95
     if variant == "nn":
         if _nn_wrapper_937(song.mem, song.base, song.play, song.init):
-            return Player937(song, subtune=subtune)
-        return PlayerNN(song, subtune=subtune)
+            return Player937
+        return PlayerNN
     if variant == "v1d":
-        return PlayerV1D(song, subtune=subtune)
-    return Player(song, subtune=subtune)
+        return PlayerV1D
+    return DmcPlayer
 
 
-def iter_frames(
-    song: Song, max_frames: int = 50 * 60, subtune: int = 0
-) -> Iterator[List[Tuple[int, int]]]:
-    """Yield each VBI play call's ``(reg, val)`` SID writes (reg = $D4xx 0..24).
-
-    The first yielded burst is the INIT burst (the player's setup writes -- it
-    forms the per-frame grid's frame-0 baseline, matching the cycle-exact
-    emulator: init runs once, then the steady per-VBI play loop); each subsequent
-    burst is one play call.  The play body is selected by the tune's DMC
-    generation (init-``$37`` vs init-``$1d``).
-    """
-    player = _player_for(song, subtune)
-    yield [(reg - SID_BASE, val) for reg, val in player.init_writes]
-    for _ in range(max_frames):
-        yield [(reg - SID_BASE, val) for reg, val in player.play_frame()]
+def _player_for(song: Song, subtune: int = 0) -> DmcPlayer:
+    """Instantiate the play body matching ``song``'s DMC generation."""
+    return _engine_class(song)(song, subtune=subtune)

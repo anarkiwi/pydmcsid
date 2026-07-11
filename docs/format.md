@@ -35,16 +35,17 @@ Three reorganised bodies dispatched to a non-`$85` play offset are modeled by
 their own transcriptions, each gated by a normalised-body signature disjoint from
 the `$85` anchor so the base engine is provably unaffected:
 
-- `base+$a1` — the V5-era `PlayerA1` engine (own `$17cf..` work-RAM map, two-frame
+- `base+$a1` — the V5-era `$a1` engine (own `$17cf..` work-RAM map, two-frame
   startup gate, per-voice wavetable/16-bit PW+filter sweeps, global cutoff sweep +
   volume fade, two per-build patchable release stores). Signature: `A1_BODY_SHA256`.
-- `base+$95` — the compact self-modifying `Player95` engine (global tempo divider
+- `base+$95` — the compact self-modifying `$95` engine (global tempo divider
   `$1016` selecting a row-advance vs steady-tick pass, preset voice stride
   `$100c,X`, global cutoff sweep on voice 2). Signature: `N95_BODY_SHA256`.
-- the `$947`/`$94a`/`$937` dispatch — `PlayerNN`: the standard init-`$1d` body
-  behind a 2-level PSID dispatch (the play entry `JMP`s into the ordinary body at
-  a virtual base `load+1` or `load+13`), so it reuses `PlayerV1D` at the derived
-  base rather than a separate transcription.
+- the `$947`/`$94a`/`$937` dispatch — the standard init-`$1d` body behind a 2-level
+  PSID dispatch (the play entry `JMP`s into the ordinary body at a virtual base
+  `load+1` or `load+13`), so it reuses the init-`$1d` engine at the derived base
+  rather than a separate transcription; the `$937` sub-family adds a resident
+  CIA-multispeed wrapper.
 
 Across HVSC (sidid `DMC` family) it recognises 9902 of 10759 tunes, 9702 of them
 reproduced byte-exact (v37 2903, v1d 4925, `$a1` 1196, `$95` 472, `$94a` 206).
@@ -75,10 +76,19 @@ followed to its first `RTS`) rather than assuming it per generation.
 
 ## Player and playback notes
 
-`iter_register_writes(song, max_frames)` yields one `RegWrite(clock, reg, val)`
-per SID write, frames `cycles_per_frame` apart (the shared `py*` register-log
-convention, matching `pygoattracker` / `pymusicassembler`). The DMC player emits
-one tight write burst per VBI play call.
+One class, `DmcPlayer`, derives from `pysidtracker.MemPlayer` and owns the shared
+playback machinery (the 64 KiB memory mount, the post-init snapshot, the diffing
+`play_frame`, `render_grid` / `iter_frames`); each DMC generation is a private
+subclass implementing only its `_setup` (resolve the per-tune table bases from the
+resident code), `_init` and `_frame`. `DmcPlayer(source)` — a `Song` or
+`.sid`/`.prg` bytes — dispatches to the matching generation.
+
+`DmcPlayer(source).render_grid(nframes)` is the per-frame `$D400..$D418` register
+grid (25 registers, forward-filled, pulse-width-high nibble-masked) — the shape
+the sidtrace oracle produces. `iter_register_writes(song, max_frames)` yields one
+`RegWrite(clock, reg, val)` per SID write, frames `cycles_per_frame` apart (the
+shared `py*` register-log convention, via
+`pysidtracker.register_writes_from_player`).
 
 `song.byte_exact()` reports whether the recognised body is one the transcription
 reproduces byte-for-byte: the init-`$37` and the modelled init-`$1d` generations
@@ -86,13 +96,17 @@ reproduces byte-for-byte: the init-`$37` and the modelled init-`$1d` generations
 only for a build whose play entry is wrapped, whose AD/SR helper is relocated,
 whose release is patched to an unrecognised routine, or (for the reorganised
 engines) whose header vectors resolve outside the resident player (a
-subtune-selector / multispeed wrapper). `tests/test_corpus.py` and
-`tests/test_corpus_clusters.py` validate a
-deterministic HVSC sample against a local `$HVSC` tree, and the committed
-`.grid.txt` frozen py65-oracle references are checked frame-exact — covering both
-generations, a 2-entry-dispatch build, relocated builds (load ≠ `$1000` and the
-relocated `base+$50` play entry), and all four release AD/SR combinations
-(`$37` stock/patched, `$1d` clear/no-clear).
+subtune-selector / multispeed wrapper). `tests/test_corpus.py` validates a
+deterministic HVSC sample against a local `$HVSC` tree, and
+`tests/test_oracle_hvsc.py` (the `oracle` marker, a dedicated CI job) confirms
+`DmcPlayer.render_grid` frame-for-frame against the deterministic `sidplayfp`
+[`sidtrace`](https://github.com/anarkiwi/sidtrace) oracle over a real HVSC
+representative of every generation — init-`$37`/`$1d` (with the code-read scene
+patches), the `$a1`/`$95` engines, the `$94a` 2-level dispatch and its `$937`
+CIA-multispeed wrapper, and a benign play-wrapper build. A small residual of
+per-tune scene micro-patches and CIA-multispeed wrappers pydmcsid does not model
+(e.g. a 2× CIA-reprogrammed play rate) is recognised but diverges from the
+single-speed render, so it is excluded from the byte-exact oracle set.
 
 ## Export
 

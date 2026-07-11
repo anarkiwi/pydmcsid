@@ -28,20 +28,53 @@ jobs:
       - name: Cache HVSC test tunes
         # DMC tunes are HVSC copyright works (NEVER committed); they are fetched
         # on demand into the gitignored tunecache.  Cache that dir across runs,
-        # keyed on the corpus lists + fetch script, so tunes download once.
+        # keyed on the corpus/tune lists + fetch script, so tunes download once.
         uses: actions/cache@v6
         with:
           path: tests/.tunecache
-          key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/fixtures/dmc_clusters.txt', 'scripts/fetch_tunes.py') }}
+          key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/helpers.py', 'tests/test_oracle_hvsc.py', 'scripts/fetch_tunes.py') }}
           restore-keys: |
             hvsc-tunecache-
-      - name: pytest + coverage (> 85%)
-        # Tunes are HVSC copyright works (never committed); CI has no
-        # SIDTRACE_BIN, so the byte-exact player tests validate against the
-        # committed frozen oracle grids, and tune-dependent tests fetch from
-        # the HVSC mirror into the cached tunecache (skipping only a tune that
-        # is genuinely unreachable).
-        run: pytest -n auto --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
+      - name: pytest + coverage (> 85%, oracle excluded)
+        # The non-oracle suite fetches tunes from the HVSC mirror into the cached
+        # tunecache; the byte-exact-vs-oracle job below is the Docker gate.
+        run: pytest --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
+
+  oracle:
+    # Byte-exact comparison of DmcPlayer.render_grid against the sidtrace
+    # sidplayfp oracle over real HVSC DMC tunes -- one per modelled generation.
+    # Never skipped: a failed HVSC download or oracle render fails the job. HVSC
+    # tunes and oracle CSVs are cached.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Pull sidtrace oracle image
+        id: image
+        run: |
+          docker pull anarkiwi/sidtrace:latest
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' anarkiwi/sidtrace:latest)
+          echo "digest=${digest##*@}" >> "$GITHUB_OUTPUT"
+      - name: Cache HVSC tunes
+        uses: actions/cache@v6
+        with:
+          path: tests/.tunecache
+          key: hvsc-${{ hashFiles('tests/test_oracle_hvsc.py') }}
+          restore-keys: hvsc-
+      - name: Cache oracle CSVs
+        uses: actions/cache@v6
+        with:
+          path: .oracle-cache/csv
+          key: oracle-csv-${{ steps.image.outputs.digest }}-${{ hashFiles('tests/test_oracle_hvsc.py') }}
+      - name: Oracle comparison (never skipped)
+        run: pytest -m oracle -n auto
 
   build:
     runs-on: ubuntu-latest
