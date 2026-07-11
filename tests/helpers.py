@@ -1,152 +1,62 @@
-"""Shared test helpers (constants + frozen-grid loader)."""
+"""Shared test constants: the HVSC tune list the tune-driven tests parametrize.
 
-from pathlib import Path
+DMC ``.sid`` tunes are HVSC copyright works, never committed; each id maps to its
+HVSC relative path (fetched + cached on demand).  The tunes span every DMC body
+generation pydmcsid plays byte-exact -- init-``$37`` (:class:`~pydmcsid.Player`),
+init-``$1d`` (:class:`~pydmcsid.PlayerV1D`), the ``$a1`` engine
+(:class:`~pydmcsid.PlayerA1`), the ``$95`` engine (:class:`~pydmcsid.Player95`),
+the ``$94a`` family (:class:`~pydmcsid.PlayerNN`) and its ``$937`` multispeed
+wrapper (:class:`~pydmcsid.Player937`) -- plus the scene-patched builds each
+variant's code-reading detectors reproduce.  The curated byte-exact-vs-oracle
+subset lives in ``test_oracle_hvsc.py``.
+"""
 
-from pysidtracker.oracle import grid_from_writes as _grid_from_writes
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
 NREG = 25
 
 TUNES = {
-    "ode": ("MUSICIANS/A/Ass_It/Ode_to_Music.sid", "Ode_to_Music.grid.txt"),
-    "faces": ("DEMOS/A-F/Faces.sid", "Faces.grid.txt"),
-    "fear": ("DEMOS/A-F/Fear_Me.sid", "Fear_Me.grid.txt"),
-    "wladca": ("GAMES/S-Z/Wladca.sid", "Wladca.grid.txt"),
-    # 2-entry (init/play) dispatch, identical body (sidid $37/$85 cluster): the
-    # generalised anchor now recognises + plays it byte-exact.
-    "summertime": ("MUSICIANS/B/Bart/Summertime.sid", "Summertime.grid.txt"),
-    # A relocated build (load=$6600): byte-exact after the absolute-operand fix
-    # (previously recognised but mis-played by the double-counted ``rel``).
-    "action_tank": ("MUSICIANS/R/Robric/Action_Tank_2.sid", "Action_Tank_2.grid.txt"),
-    # init-$1d generation ($7e/$7d/$7f markers), now reproduced byte-exact: the
-    # base-layout body, a relocated build (load=$5000), and the relocated-cell
-    # sub-layout (note cells at $1630) respectively.
-    "glorious": ("MUSICIANS/B/Bakker_Nantco/Glorious.sid", "Glorious.grid.txt"),
-    "rocket": (
-        "MUSICIANS/B/Bayliss_Richard/Rocket_n_Roll.sid",
-        "Rocket_n_Roll.grid.txt",
-    ),
-    "techno_bah": ("MUSICIANS/D/Doxx/Techno_BAH.sid", "Techno_BAH.grid.txt"),
-    # Relocated play entry (dispatch play -> base+$50): the v1d engine with its
-    # play entry shifted out of the id-string region, engine unchanged at
-    # base+$b0.  Recognised + played byte-exact by the generalised anchor.
-    "kordiaukis": ("DEMOS/G-L/Kordiaukis_Mix.sid", "Kordiaukis_Mix.grid.txt"),
-    # Scene-modified init-$37 build: the $133d release is patched to also zero
-    # AD/SR (an envelope-clearing hard-restart); pydmcsid detects the patch and
-    # reproduces it byte-exact.  Stock $37 builds leave AD/SR static here.
-    "insider": ("MUSICIANS/W/Willi/Insider_01.sid", "Insider_01.grid.txt"),
-    # Hand-patched init-$1d build: the pw_min shift chain at $124b has its third
-    # LSR overwritten by an illegal 2-byte no-op ($17), so pw_min = inst[2]>>2
-    # (not >>4).  pydmcsid reads the shift from the code and reproduces it.
-    "nop_years": ("MUSICIANS/A/Aomeba/20_Years_of_NOP.sid", "20_Years_of_NOP.grid.txt"),
-    # $a1 engine (V5-era reorganised body, play at base+$a1): a genuinely
-    # different generation reproduced byte-exact by PlayerA1.  Katusha is the
-    # canonical body; Dum_Dum relocates its init (order-table base read from the
-    # $17cf store site); Blutal_Haldcole patches out the release SR-clear
-    # ($16c7 STA->BIT); Short_Fusion exercises the portamento-into-vibrato path.
-    "katusha": ("DEMOS/G-L/Katusha.sid", "Katusha.grid.txt"),
-    "dum_dum": ("MUSICIANS/F/Froyd/Dum_Dum.sid", "Dum_Dum.grid.txt"),
-    "blutal": ("MUSICIANS/C/CreaMD/Blutal_Haldcole.sid", "Blutal_Haldcole.grid.txt"),
-    "short_fusion": ("MUSICIANS/P/PRI/Short_Fusion.sid", "Short_Fusion.grid.txt"),
-    # $95 engine (compact, self-modifying body, play at base+$95): a distinct
-    # earlier lineage reproduced byte-exact by Player95.  Happy_Rave is the
-    # canonical body; Popyjava_Pyjakoof and Intro_Music exercise the wildcarded
-    # tempo-reload seed ($10bf = $02 / $00); I_Love_DMC is a second author's build.
-    "happy_rave": ("DEMOS/G-L/Happy_Rave.sid", "Happy_Rave.grid.txt"),
-    "popyjava": (
-        "MUSICIANS/B/Booker/Popyjava_Pyjakoof.sid",
-        "Popyjava_Pyjakoof.grid.txt",
-    ),
-    "intro_music": (
-        "MUSICIANS/B/Bakewell_Dwayne/Intro_Music.sid",
-        "Intro_Music.grid.txt",
-    ),
-    "i_love_dmc": (
-        "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
-        "I_Love_DMC.grid.txt",
-    ),
-    # $94a family (init-$1d $85 body behind a 2-level PSID dispatch, engine
-    # authored at a virtual base): recognised via the dispatch follow and played
-    # byte-exact by PlayerNN (a thin PlayerV1D at the derived base).  Day_Noter +
-    # High_Balance are canonical (virtual base = load+1); Poeci is the longer-stub
-    # layout (virtual base = load+13); 90_Seconds is a second author's build.
-    "day_noter": ("MUSICIANS/G/Glover/Day_Noter.sid", "Day_Noter.grid.txt"),
-    "high_balance": ("MUSICIANS/G/Glover/High_Balance.sid", "High_Balance.grid.txt"),
-    "poeci": ("MUSICIANS/W/Wodnik/Poeci.sid", "Poeci.grid.txt"),
-    "ninety_sec": ("MUSICIANS/P/Psych858o/90_Seconds.sid", "90_Seconds.grid.txt"),
-    # $937 CIA-multispeed appended-wrapper sub-family of the $94a line: the header
-    # play/init resolve into an appended $2xxx divide-by-6 multispeed wrapper that
-    # runs the resident MAIN play (the modelled $1d body) once every 6 calls and a
-    # reorganised per-voice REFRESH body ($base+$8f0, masked non-row ticks) on the
-    # other 5 -- reproduced byte-exact by Player937.  Dude_with_Attitude is the
-    # canonical all-voices-every-phase build; Rusty/Losing/Coffee exercise the
-    # per-voice phase masks (voices refreshed on only some of the 5 sub-phases).
-    "dude": (
-        "MUSICIANS/P/Psych858o/Dude_with_Attitude.sid",
-        "Dude_with_Attitude.grid.txt",
-    ),
-    "rusty": (
-        "MUSICIANS/P/Psych858o/My_Rusty_Love_C64.sid",
-        "My_Rusty_Love_C64.grid.txt",
-    ),
-    "losing": ("MUSICIANS/P/Psych858o/Losing_Control.sid", "Losing_Control.grid.txt"),
-    "coffee": (
-        "MUSICIANS/P/Psych858o/Cup_of_Coffee_and_Few_Cigs.sid",
-        "Cup_of_Coffee_and_Few_Cigs.grid.txt",
-    ),
-    # Benign play-wrapper builds: the header play vector is not base+3 but a thin
-    # stub that statically follows to the standard play entry, so the resident body
-    # is reproduced byte-exact (see reader._play_wrapper_benign).  Krupa_Mix is a
-    # transparent CIA-multispeed divider (DEC counter; BOTH branches JMP $1003);
-    # Sharkz is a subtune-selector thunk whose init self-modifies the play-JMP high
-    # byte back to $10 (stable $1003); Axel_F reprograms the CIA then JMPs the
-    # relocated play entry (base=$7000); Sun_in_My_Eyes is an $a1 build whose init
-    # (not play) resolves into a wrapper selector.
-    "krupa_mix": ("DEMOS/G-L/Krupa_Mix.sid", "Krupa_Mix.grid.txt"),
-    "sharkz": ("MUSICIANS/B/Bayliss_Richard/Sharkz.sid", "Sharkz.grid.txt"),
-    "axel_f": ("MUSICIANS/P/PVCF/Axel_F.sid", "Axel_F.grid.txt"),
-    "sun_eyes": (
-        "MUSICIANS/B/Bayliss_Richard/Sun_in_My_Eyes.sid",
-        "Sun_in_My_Eyes.grid.txt",
-    ),
-    # init-$1d build whose note-onset helper call ($11DB JSR $17FB) is patched to
-    # an illegal BIT no-op ($2C): the note-fetch frame emits no CTRL/AD/SR write
-    # (the onset slips a frame).  pydmcsid reads the opcode (v1d_note_onset) and
-    # reproduces it byte-exact.
-    "snowball": (
-        "MUSICIANS/B/Bayliss_Richard/Snowball_Caper_2.sid",
-        "Snowball_Caper_2.grid.txt",
-    ),
-    # init-$1d build whose play-body tail store ($10AC STA $D417) is redirected to
-    # a helper that also forces the $D418 filter-type nibble every frame
-    # (LDA #$10 ; ORA $1717 ; STA $D418).  pydmcsid detects it (tail_d418_force).
-    "for_vandalism": (
-        "MUSICIANS/R/Rorschach/For_Vandalism_27.sid",
-        "For_Vandalism_27.grid.txt",
-    ),
-    # init-$37 build whose note-onset CTRL immediate ($11D9 LDA #imm) is patched
-    # from the stock TEST bit $08 to $40.  pydmcsid reads it (v37_onset_ctrl).
-    "rock_zak": ("MUSICIANS/B/Brian/Rock_Zak_1.sid", "Rock_Zak_1.grid.txt"),
+    # init-$37 body (Player): canonical, 2-entry dispatch, relocated build, and
+    # the patched release/onset builds the $37 detectors reproduce.
+    "ode": "MUSICIANS/A/Ass_It/Ode_to_Music.sid",
+    "faces": "DEMOS/A-F/Faces.sid",
+    "fear": "DEMOS/A-F/Fear_Me.sid",
+    "wladca": "GAMES/S-Z/Wladca.sid",
+    "summertime": "MUSICIANS/B/Bart/Summertime.sid",
+    "action_tank": "MUSICIANS/R/Robric/Action_Tank_2.sid",
+    "insider": "MUSICIANS/W/Willi/Insider_01.sid",
+    "rock_zak": "MUSICIANS/B/Brian/Rock_Zak_1.sid",
+    # init-$1d body (PlayerV1D): base + relocated + relocated-cell sub-layouts,
+    # plus the patched shift/onset/tail-$D418 builds.
+    "glorious": "MUSICIANS/B/Bakker_Nantco/Glorious.sid",
+    "rocket": "MUSICIANS/B/Bayliss_Richard/Rocket_n_Roll.sid",
+    "techno_bah": "MUSICIANS/D/Doxx/Techno_BAH.sid",
+    "kordiaukis": "DEMOS/G-L/Kordiaukis_Mix.sid",
+    "nop_years": "MUSICIANS/A/Aomeba/20_Years_of_NOP.sid",
+    "snowball": "MUSICIANS/B/Bayliss_Richard/Snowball_Caper_2.sid",
+    "for_vandalism": "MUSICIANS/R/Rorschach/For_Vandalism_27.sid",
+    # $a1 engine (PlayerA1): canonical, relocated init, release-patched, and the
+    # portamento-into-vibrato path.
+    "katusha": "DEMOS/G-L/Katusha.sid",
+    "dum_dum": "MUSICIANS/F/Froyd/Dum_Dum.sid",
+    "blutal": "MUSICIANS/C/CreaMD/Blutal_Haldcole.sid",
+    "short_fusion": "MUSICIANS/P/PRI/Short_Fusion.sid",
+    # $95 engine (Player95): canonical + wildcarded tempo seed + second author.
+    "happy_rave": "DEMOS/G-L/Happy_Rave.sid",
+    "popyjava": "MUSICIANS/B/Booker/Popyjava_Pyjakoof.sid",
+    "intro_music": "MUSICIANS/B/Bakewell_Dwayne/Intro_Music.sid",
+    "i_love_dmc": "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
+    # $94a family (PlayerNN): virtual-base layouts + second author.
+    "day_noter": "MUSICIANS/G/Glover/Day_Noter.sid",
+    "high_balance": "MUSICIANS/G/Glover/High_Balance.sid",
+    "poeci": "MUSICIANS/W/Wodnik/Poeci.sid",
+    "ninety_sec": "MUSICIANS/P/Psych858o/90_Seconds.sid",
+    # $937 CIA-multispeed wrapper (Player937): all-voices + per-voice phase masks.
+    "dude": "MUSICIANS/P/Psych858o/Dude_with_Attitude.sid",
+    "rusty": "MUSICIANS/P/Psych858o/My_Rusty_Love_C64.sid",
+    "losing": "MUSICIANS/P/Psych858o/Losing_Control.sid",
+    "coffee": "MUSICIANS/P/Psych858o/Cup_of_Coffee_and_Few_Cigs.sid",
+    # Benign play-wrapper builds (resident body follows through the wrapper).
+    "krupa_mix": "DEMOS/G-L/Krupa_Mix.sid",
+    "sharkz": "MUSICIANS/B/Bayliss_Richard/Sharkz.sid",
+    "axel_f": "MUSICIANS/P/PVCF/Axel_F.sid",
+    "sun_eyes": "MUSICIANS/B/Bayliss_Richard/Sun_in_My_Eyes.sid",
 }
-
-
-def load_grid(tune_id):
-    """Load the committed frozen per-call oracle grid for ``tune_id``."""
-    _rel, grid = TUNES[tune_id]
-    rows = []
-    with open(FIXTURES / grid, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                rows.append([int(tok, 16) for tok in line.split()])
-    return rows
-
-
-def grid_from_writes(writes, cpf=19656):
-    """Frame a ``(clock, reg, val)`` write-stream into a forward-filled per-frame
-    grid via the shared :func:`pysidtracker.oracle.grid_from_writes` (the STANDARD
-    framing the validator pipeline uses): frame 0 is the first PLAY call (the first
-    write after the >10000-cycle init gap), the leading init burst forms frame 0's
-    baseline, and PW-high registers are masked to 4 bits.
-    """
-    return _grid_from_writes(writes, cycles_per_frame=cpf, reg_count=NREG)

@@ -517,7 +517,7 @@ def test_nn937_wrapper_immediates_read_from_code():
     assert player._reload == 3 and player._ms == 2
     for _ in range(12):  # a handful of wrapper calls: main + refresh, no crash
         for reg, val in player.play_frame():
-            assert 0 <= reg - 0xD400 < 25 and 0 <= val <= 0xFF
+            assert 0 <= reg < 25 and 0 <= val <= 0xFF
 
     # Enable flag cleared: every intermediate wrapper call falls back to the full
     # resident play (the reorganised refresh body is a no-op for that build).

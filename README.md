@@ -23,6 +23,8 @@ import pydmcsid
 song = pydmcsid.read("tune.sid")       # path, bytes, or binary file object
 print(song.byte_exact())               # is this build reproduced frame-for-frame?
 
+grid = pydmcsid.DmcPlayer(song).render_grid(3000)   # per-frame $D400..$D418 (25 regs)
+
 for w in pydmcsid.iter_register_writes(song, max_frames=50 * 60):
     print(w.clock, w.reg, w.val)       # absolute CPU cycle, $D4xx reg offset, value
 
@@ -30,7 +32,9 @@ pydmcsid.write(song, "out.prg")        # export the packed player+data (editor-l
 pydmcsid.write(song, "out.sid")        # ...or a PSID/RSID container
 ```
 
-`iter_register_writes` follows the shared `py*` register-log convention: one
+`DmcPlayer` is a single [`pysidtracker.MemPlayer`](https://github.com/anarkiwi/pysidtracker)
+covering every DMC generation; `render_grid(n)` returns the forward-filled 25-register
+grid. `iter_register_writes` follows the shared `py*` register-log convention: one
 `RegWrite(clock, reg, val)` per SID write, frames `cycles_per_frame` apart.
 
 ## Development

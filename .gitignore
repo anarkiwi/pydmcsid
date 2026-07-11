@@ -223,3 +223,6 @@ tests/.tunecache/
 *.prg
 *.wav
 *.sidwr.bin
+
+# sidtrace oracle CSV/HVSC cache (never committed)
+.oracle-cache/
