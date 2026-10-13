@@ -8,6 +8,8 @@ import oracle_hvsc
 import pytest
 
 import pysidtracker
+from pysidtracker.cadence import Cadence
+from pysidtracker.registers import PAL_CLOCK_HZ, PAL_CYCLES_PER_FRAME
 from pysidtracker.sidid import sidid_signatures
 from pysidtracker.testing import resolve_tune
 
@@ -29,6 +31,13 @@ def test_render_matches_player(tune_path):
     np.testing.assert_array_equal(grid, DmcPlayer(data).render_grid(120))
     assert json.loads(json.dumps(info)) == info
     assert info["engine"] == type(DmcPlayer(data)).__name__
+
+
+def test_render_reports_unknown_trigger(monkeypatch):
+    unknown = Cadence(PAL_CYCLES_PER_FRAME, None, PAL_CLOCK_HZ)
+    monkeypatch.setattr(oracle_hvsc, "playroutine_cadence", lambda *_, **__: unknown)
+    info = oracle_hvsc.render(_tune("ode"), 1, 1)[1]
+    assert (info["trigger"], info["speed"]) == (None, 1)
 
 
 @pytest.mark.parametrize(
