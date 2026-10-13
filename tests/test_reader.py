@@ -7,7 +7,7 @@ from pysidtracker import PlayroutineKind
 
 import pydmcsid
 from pydmcsid import DmcSidParser
-from pydmcsid.errors import DmcError, SidParseError
+from pydmcsid.errors import DmcError, DmcFormatError, DmcParseError, SidParseError
 
 
 def test_read_sid(tune_path):
@@ -840,7 +840,12 @@ def test_wrapper_bounds_safe_never_raises():
 def test_errors_subclass_pysidtracker():
     """The pydmcsid error hierarchy re-parents onto ``pysidtracker.SidError``."""
     assert issubclass(DmcError, pysidtracker.SidError)
-    assert issubclass(SidParseError, pysidtracker.SidError)
+    assert issubclass(DmcParseError, DmcError)
+    assert issubclass(DmcParseError, pysidtracker.SidParseError)
+    assert issubclass(DmcFormatError, DmcError)
+    assert issubclass(DmcFormatError, pysidtracker.SidFormatError)
+    assert SidParseError is DmcParseError
+    assert DmcSidParser.error_class is DmcParseError
 
 
 def test_parser_detect_direct(tune_path):

@@ -1,12 +1,13 @@
 """Exceptions for pydmcsid.
 
-The hierarchy is built by the shared :func:`pysidtracker.make_package_errors`
-factory so the DMC-named errors subclass BOTH the ``DmcError`` root AND the base
-``pysidtracker`` errors (a caller's ``except SidParseError`` still catches them).
+Built by :func:`pysidtracker.make_package_errors`: ``DmcParseError`` subclasses
+both ``DmcError`` and :class:`pysidtracker.SidParseError` ("not a decodable DMC
+tune"); ``SidParseError`` is kept as its backward-compatible alias.
 """
 
 from pysidtracker import make_package_errors
 
-DmcError, SidParseError, DmcFormatError = make_package_errors("Dmc")
+DmcError, DmcParseError, DmcFormatError = make_package_errors("Dmc")
+SidParseError = DmcParseError
 
-__all__ = ["DmcError", "DmcFormatError", "SidParseError"]
+__all__ = ["DmcError", "DmcFormatError", "DmcParseError", "SidParseError"]

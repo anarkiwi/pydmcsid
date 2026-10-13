@@ -22,7 +22,7 @@ from pysidtracker.mos6502 import (
 from pysidtracker.registers import SID_BASE, SID_REG_COUNT
 
 from pydmcsid import constants
-from pydmcsid.errors import SidParseError
+from pydmcsid.errors import DmcParseError
 
 # The DMC dispatch opening: an init ``JMP`` then the play ``JMP`` (whose target
 # is captured as ``play``).  The 2-JMP opcode gate is a masked code-fragment
@@ -861,10 +861,10 @@ def parse(data: bytes) -> Song:
     try:
         image = SidImage.from_bytes(data)
     except SidError as exc:
-        raise SidParseError(str(exc)) from exc
+        raise DmcParseError(str(exc)) from exc
     base = find_dmc_base(image.mem, image.load)
     if base is None:
-        raise SidParseError("image does not carry the DMC player signature")
+        raise DmcParseError("image does not carry the DMC player signature")
     header = image.header
     if header is not None:
         songs = header.songs
@@ -902,7 +902,7 @@ def read(path) -> Song:
 class DmcSidParser(BaseSidParser):
     """DMC parser exposing the shared :class:`BaseSidParser` API."""
 
-    error_class = SidParseError
+    error_class = DmcParseError
 
     def parse(self, data: bytes, **kwargs: Any) -> Song:
         """Parse ``data`` into a :class:`Song` (see :func:`parse`)."""
