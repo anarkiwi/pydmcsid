@@ -35,7 +35,7 @@ def render(data, song, nframes):
         "byte_exact": tune.byte_exact(),
         "wrapped": tune.play != (tune.base + STD_PLAY_REL) & 0xFFFF,
         "stub": tune.base != tune.load,
-        "trigger": cadence.source.value,
+        "trigger": cadence.source and cadence.source.value,
         "speed": round(PAL_CYCLES_PER_FRAME / cadence.cycles_per_call),
     }
     info.update({k: getattr(player, a, None) for k, a in _BUILD.items()})

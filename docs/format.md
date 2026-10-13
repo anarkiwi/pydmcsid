@@ -124,7 +124,7 @@ signature raises `DmcParseError` (a `pysidtracker.SidParseError`), which the
 survey records as `not_decompiled`.
 
 ```bash
-pip install "pysidtracker[survey]>=0.11.1"
+pip install "pysidtracker[survey]>=0.12.0"
 python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
