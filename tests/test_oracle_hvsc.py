@@ -18,11 +18,10 @@ confirmed frame-for-frame against the deterministic ``sidplayfp`` oracle.
 import os
 from pathlib import Path
 
+import oracle_hvsc
 import pytest
 
 from pysidtracker import make_oracle_fixtures
-
-from pydmcsid import DmcPlayer
 
 # Cache under the workspace (a Docker-daemon-visible path, and what CI persists via
 # actions/cache).  ``$DMC_ORACLE_CACHE`` overrides it; the committed tunecache is
@@ -67,7 +66,7 @@ TUNES = {
 def _render(data, nframes):
     # Render a few extra frames so ``aligned_match`` can skip the silent lead-in a
     # startup gate (the $a1 two-frame gate) or a silent first play call produces.
-    return DmcPlayer(data).render_grid(nframes + 8)
+    return oracle_hvsc.render(data, 1, nframes + 8)[0].tolist()
 
 
 tune_id, oracle_match = make_oracle_fixtures(

@@ -1,6 +1,6 @@
 """Read and play DMC (Demo Music Creator) SID tunes (pure-Python)."""
 
-from pydmcsid.errors import DmcError, SidParseError
+from pydmcsid.errors import DmcError, DmcFormatError, DmcParseError, SidParseError
 from pydmcsid.player import DmcPlayer
 from pydmcsid.reader import (
     DmcSidParser,
@@ -19,6 +19,8 @@ __version__ = "0.3.0"
 
 __all__ = [
     "DmcError",
+    "DmcFormatError",
+    "DmcParseError",
     "DmcPlayer",
     "DmcSidParser",
     "RegWrite",

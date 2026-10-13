@@ -22,9 +22,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: black --check
-        run: black --check src/pydmcsid tests
+        run: black --check src/pydmcsid tests scripts
       - name: pylint
-        run: pylint src/pydmcsid tests
+        run: pylint src/pydmcsid tests scripts
       - name: Cache HVSC test tunes
         # DMC tunes are HVSC copyright works (NEVER committed); they are fetched
         # on demand into the gitignored tunecache.  Cache that dir across runs,

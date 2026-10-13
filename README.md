@@ -45,7 +45,8 @@ pytest
 ```
 
 See [docs/format.md](docs/format.md) for the DMC data model, recognition
-anchors, supported builds, and byte-exact coverage.
+anchors, supported builds, byte-exact coverage, and the
+[HVSC oracle survey](docs/format.md#hvsc-oracle-survey).
 
 ## License
 

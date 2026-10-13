@@ -108,6 +108,34 @@ per-tune scene micro-patches and CIA-multispeed wrappers pydmcsid does not model
 (e.g. a 2× CIA-reprogrammed play rate) is recognised but diverges from the
 single-speed render, so it is excluded from the byte-exact oracle set.
 
+## HVSC oracle survey
+
+[`scripts/oracle_hvsc.py`](../scripts/oracle_hvsc.py) plugs `DmcPlayer` into the
+[`pysidtracker.survey`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/survey.md)
+whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
+of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` reports the decoded
+build: `engine` (the `DmcPlayer` class), `variant`, the library's own
+`byte_exact` claim, `wrapped` (play vector off the standard entry), `stub`
+(player base above the load address), the play `trigger` and `speed` (calls per
+PAL frame), and the code-read build options `release_clears_adsr`,
+`release_clears_sr`, `pw_min_shift`, `tail_d418`, `onset_ctrl`, `onset_adsr`
+(`null` where the engine has no such option). A tune without the DMC player
+signature raises `DmcParseError` (a `pysidtracker.SidParseError`), which the
+survey records as `not_decompiled`.
+
+```bash
+pip install "pysidtracker[survey]>=0.11.1"
+python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
+PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
+    --work .hvsc-survey --render oracle_hvsc:render --jobs 32
+python -m pysidtracker.survey report .hvsc-survey/results.csv
+python -m pysidtracker.survey triage .hvsc-survey
+PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.csv <md5>_<song> \
+    --work .hvsc-survey --render oracle_hvsc:render
+```
+
+`.hvsc-survey/` holds copyright-derived traces and is gitignored.
+
 ## Export
 
 `to_prg(song)` / `to_sid(song)` / `write(song, path)` serialize a parsed tune
