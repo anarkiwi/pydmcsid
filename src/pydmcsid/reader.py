@@ -784,19 +784,19 @@ def dmc_byte_exact(
 
     True for the init-``$37`` generation, the modelled init-``$1d`` bodies and the
     reorganised ``$a1`` engine; False for a recognised DMC of an unmodelled
-    generation.  When an init-``$1d`` build wraps the play entry (``play != base+3``)
-    the wrapper is FOLLOWED (:func:`_play_wrapper_benign`): a benign pass-through
-    (a pure relocator/thunk, or a transparent multispeed divider whose every branch
-    re-enters the standard play body) is admitted, since the resident body is
-    reproduced byte-exact; a genuine wrapper that writes SID registers, runs the
-    body more than once, or self-modifies its own play-JMP target is gated out.  A
-    build that instead relocates the AD/SR write out of the modelled ``$184B``
-    helper is gated out by the final operand check (``play``/``init`` are the header
-    vectors; ``None`` is the unwrapped standard entry, e.g. a bare PRG).  An
-    init-``$37`` build whose release is patched to an unrecognised routine is
-    likewise recognised but not byte-exact.  A ``$a1`` build wrapped by a subtune
-    selector / multispeed divider is admitted only when the wrapper follows to the
-    standard play entry, else gated out.
+    generation.  For the init-``$37`` and init-``$1d`` builds, when the play entry
+    is wrapped (``play != base+3``) the wrapper is FOLLOWED
+    (:func:`_play_wrapper_benign`): a benign pass-through (a pure relocator/thunk,
+    or a transparent multispeed divider whose every branch re-enters the standard
+    play body) is admitted, since the resident body is reproduced byte-exact; a
+    genuine wrapper that writes SID registers, runs the body more than once, or
+    self-modifies its own play-JMP target is gated out.  A build that instead
+    relocates the AD/SR write out of the modelled ``$184B`` helper is gated out by
+    the final operand check (``play``/``init`` are the header vectors; ``None`` is
+    the unwrapped standard entry, e.g. a bare PRG).  A build whose release is
+    patched to an unrecognised routine is likewise recognised but not byte-exact.
+    A ``$a1`` build wrapped by a subtune selector / multispeed divider is admitted
+    only when the wrapper follows to the standard play entry, else gated out.
     """
     variant = dmc_variant(mem, base)
     if variant is None:
@@ -807,12 +807,12 @@ def dmc_byte_exact(
         return _n95_byte_exact(mem, base, play, init)
     if variant == "nn":
         return _nn_byte_exact(mem, base, play, init)
-    if release_clears_adsr(mem, base) is None:  # an unrecognised release edit
+    if not _play_wrapper_benign(mem, base, play, init):
+        return False
+    if release_clears_adsr(mem, base) is None:
         return False
     if variant == "v37":
         return True
-    if not _play_wrapper_benign(mem, base, play, init):
-        return False
     return (
         _operand(mem, base, constants.INST_ADSR_SUB_OP)
         == (base + constants.INST_ADSR_SUB_REL) & 0xFFFF

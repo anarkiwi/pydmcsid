@@ -837,6 +837,45 @@ def test_wrapper_bounds_safe_never_raises():
     assert dmc_byte_exact(tmem, 0x1000, play=play2, init=init2) is False
 
 
+def test_v37_wrapper_register_writing_deferred():
+    """A v37 tune whose play stub writes a SID register is not byte-exact."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    stub = bytes([0xA9, 0x0F, 0x8D, 0x18, 0xD4, 0x4C, 0x03, 0x10])  # STA $D418; JMP
+    mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
+    assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_v37_wrapper_self_modifying_deferred():
+    """A v37 tune with a self-modifying subtune selector is not byte-exact."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    jmp_lo = (0x1000 + 0x900 + 6 + 1) & 0xFFFF
+    stub = bytes([0xBD, 0x00, 0x1A, 0x8D, jmp_lo & 0xFF, jmp_lo >> 8, 0x4C, 0x03, 0x10])
+    mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
+    assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_v37_wrapper_benign_admitted():
+    """A v37 tune with a benign pass-through wrapper is still byte-exact."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    b3 = 0x1003
+    stub = bytes([0x4C, b3 & 0xFF, b3 >> 8])  # bare JMP base+3
+    mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
+    assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
+
+
+def test_v37_unwrapped_byte_exact():
+    """A v37 tune with no wrapper (play=None) is byte-exact."""
+    from pydmcsid.reader import dmc_byte_exact
+
+    body = _dmc_body(0x1000, marker=0xFE)
+    mem = bytearray(0x10000)
+    mem[0x1000 : 0x1000 + len(body)] = body
+    assert dmc_byte_exact(mem, 0x1000, play=None, init=None)
+
+
 def test_errors_subclass_pysidtracker():
     """The pydmcsid error hierarchy re-parents onto ``pysidtracker.SidError``."""
     assert issubclass(DmcError, pysidtracker.SidError)
