@@ -152,7 +152,8 @@ class DmcPlayer(MemPlayer):
         self._pw_min_shift = pw_min_shift(mem, song.base)
         # $ff loop: JSR handler jumps to a target (next byte) vs STA $00 resets to order 0
         self._order_loop_target = (
-            mem[song.base + constants.ORDER_LOOP_HANDLER_REL] == constants.ORDER_LOOP_JSR_OP
+            mem[song.base + constants.ORDER_LOOP_HANDLER_REL]
+            == constants.ORDER_LOOP_JSR_OP
         )
         # A few builds redirect the play-body tail ($10AC STA $D417) to a helper
         # that also forces the $D418 filter-type nibble every frame; the forced
