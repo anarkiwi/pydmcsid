@@ -226,6 +226,7 @@ tests/.tunecache/
 
 # sidtrace oracle CSV/HVSC cache (never committed)
 .oracle-cache/
+.oracle-diag/
 
 # pysidtracker.survey work dir: copyright-derived traces (never committed)
 .hvsc-survey/

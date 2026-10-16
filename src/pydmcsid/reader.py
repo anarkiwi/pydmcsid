@@ -857,7 +857,12 @@ class Song:
 
 
 def parse(data: bytes) -> Song:
-    """Parse SID/PRG ``data`` bytes into a :class:`Song`."""
+    """Parse SID/PRG ``data`` bytes into a :class:`Song`.
+
+    Raises :class:`~pydmcsid.errors.DmcParseError` when the image is not a DMC tune
+    or carries a DMC signature of a body generation pydmcsid does not model (so
+    callers distinguish "not a DMC" from "a DMC we do not reproduce byte-exact").
+    """
     try:
         image = SidImage.from_bytes(data)
     except SidError as exc:
@@ -865,6 +870,10 @@ def parse(data: bytes) -> Song:
     base = find_dmc_base(image.mem, image.load)
     if base is None:
         raise DmcParseError("image does not carry the DMC player signature")
+    if dmc_variant(image.mem, base) is None:
+        raise DmcParseError(
+            "DMC signature found but the body is a generation pydmcsid does not model"
+        )
     header = image.header
     if header is not None:
         songs = header.songs

@@ -126,12 +126,23 @@ def test_later_generation_recognised_byte_exact():
 
 
 def test_unmodelled_generation_recognised_not_byte_exact():
-    """A DMC body with an unknown marker is recognised but not byte-exact."""
+    """A DMC body with an unknown marker is recognised as DMC but not modelled.
+
+    ``find_dmc_base`` still locates the dispatch table (the body generation is
+    neither of the modelled bytes), but ``parse`` raises -- the tune is not one
+    pydmcsid reproduces byte-exact, so a wrong render is not returned.
+    """
     prg = b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x55)
-    song = DmcSidParser().parse(prg)
-    assert song.is_dmc()
-    assert song.variant() is None
-    assert not song.byte_exact()
+    from pydmcsid.reader import dmc_variant, find_dmc_base
+
+    mem = bytearray(0x10000)
+    body = _dmc_body(0x1000, init_rel=0x1D, marker=0x55)
+    mem[0x1000 : 0x1000 + len(body)] = body
+    base = find_dmc_base(mem, 0x1000)
+    assert base == 0x1000  # recognised as a DMC tune
+    assert dmc_variant(mem, base) is None  # but an unmodelled body generation
+    with pytest.raises(DmcParseError):
+        pydmcsid.parse(prg)
 
 
 def test_reorganised_body_rejected():
