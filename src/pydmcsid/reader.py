@@ -8,7 +8,7 @@ memory image and its load address; the player walks the resident tables directly
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from pysidtracker import BaseSidParser, CodePattern, SidError, SidImage, find_code_all
 from pysidtracker.mos6502 import (
@@ -488,6 +488,47 @@ def _play_wrapper_benign(
         return True
     overlay = _sim_init_patches(mem, base, init, 0)
     return _wrapper_reaches_play(mem, base, play, overlay)
+
+
+def wrapper_body(song: "Song", subtune: int) -> Tuple[int, int]:
+    """The ``(body base, subtune)`` a subtune-selector wrapper selects for the song.
+
+    A DMC ``Song`` may be wrapped by an init routine (at ``song.init``) that
+    self-modifies the play ``JMP`` high byte to point at a different body section
+    and stashes the chosen subtune in a side cell, keyed on the requested song
+    (``TAX : LDA table,X : STA <play+2> : LDA table2,X : STA <cell> : JMP base``).
+    The standard render passes ``subtune`` straight to the primary body and renders
+    from frame 0, so it renders the wrong section/subtune for such a song.
+
+    Returns the primary ``song.base`` unchanged for an unwrapped entry or a wrapper
+    that does not self-modify the play (a benign thunk/divider, the identity
+    single-body case).  For a self-modifying selector it follows init's own
+    self-patches (via :func:`_sim_init_patches`) to the song's body section and
+    recovers the chosen subtune from the selector's non-body cell.
+    """
+    mem = song.mem
+    base = song.base
+    play = song.play & 0xFFFF
+    init = song.init & 0xFFFF
+    if play == (base + constants.STD_PLAY_REL) & 0xFFFF:
+        return base, subtune
+    overlay = _sim_init_patches(mem, base, init, subtune)
+    if not overlay or (play + 1 not in overlay) and (play + 2 not in overlay):
+        return base, subtune  # not a self-modifying play selector
+    lo = _wrap_read(mem, overlay, play + 1)
+    hi = _wrap_read(mem, overlay, play + 2)
+    if lo is None or hi is None or mem[play] != 0x4C:
+        return base, subtune
+    body_base = (lo | (hi << 8)) & 0xFF00  # DMC bodies are page-aligned
+    if body_base == (base & 0xFF00) or find_dmc_base(mem, body_base) is None:
+        return base, subtune  # same body, or no DMC body there -- keep the primary
+    body_page = (body_base >> 8) & 0xFF
+    chosen = {
+        value & 0xFF
+        for addr, value in overlay.items()
+        if addr not in (play + 1, play + 2) and (value & 0xFF) != body_page
+    }
+    return body_base, (next(iter(chosen)) if len(chosen) == 1 else 0)
 
 
 def _helper_zeros_adsr(mem, addr: int) -> bool:

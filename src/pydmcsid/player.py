@@ -23,6 +23,7 @@ keeping it standalone lets pydmcsid serve as an independent validator oracle.
 # pylint: disable=too-many-instance-attributes,too-many-branches,too-many-statements
 # pylint: disable=too-many-return-statements,too-many-public-methods,too-many-lines
 
+import dataclasses
 from typing import List, Tuple
 
 from pysidtracker import MemPlayer
@@ -47,6 +48,7 @@ from pydmcsid.reader import (
     tail_d418_force,
     v1d_note_onset,
     v37_onset_ctrl,
+    wrapper_body,
 )
 
 _PW_HI = tuple(PW_HI_REGS)
@@ -97,9 +99,17 @@ class DmcPlayer(MemPlayer):
 
     def __init__(self, source, subtune: int = 0):
         song = source if isinstance(source, Song) else parse(bytes(source))
+        base, subtune = wrapper_body(song, subtune)
+        if base != (song.base & 0xFFFF):
+            song = dataclasses.replace(
+                song,
+                base=base,
+                play=(base + constants.STD_PLAY_REL) & 0xFFFF,
+                init=base,
+            )
         self.song = song
-        self.base = self.load = song.base  # player origin (JMP-table base = $1000)
-        self.rel = song.base - 0x1000  # the player is authored at $1000
+        self.base = self.load = base
+        self.rel = base - 0x1000  # the player is authored at $1000
         self._setup(song)
         # MemPlayer mounts the full image at load 0, seeds $D418, runs ``_init``
         # then snapshots; the transcription mutates the mounted memory in place.

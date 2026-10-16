@@ -131,6 +131,35 @@ def test_multi_song_full_length(rel, song):
 
 @pytest.mark.oracle
 @pytest.mark.parametrize(
+    "rel,song,frames",
+    [
+        ("GAMES/S-Z/Session.sid", 1, 500),
+        ("GAMES/S-Z/Session.sid", 2, 500),
+    ],
+    ids=["Session_s1", "Session_s2"],
+)
+def test_wrapper_selector_full_length(rel, song, frames):
+    """A subtune-selector wrapper's chosen body section reproduces the oracle.
+
+    Session maps each PSID song onto a distinct DMC body section (the init
+    self-modifies the play-JMP high byte) plus a subtune (a side cell); the
+    player must follow init's self-patches to the per-song (body, subtune)
+    pair, not pass the song straight to the primary body.
+    """
+    path = resolve_tune(rel, cache_dir=_HVSC)
+    if path is None:
+        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
+    rendered = np.asarray(
+        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
+    ).tolist()
+    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
+    assert aligned_match(
+        oracle, rendered, max_lead=8
+    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize(
     "rel,song",
     [("DEMOS/A-F/FST.sid", 1), ("DEMOS/A-F/Axel_F_Remix.sid", 1)],
     ids=["FST_s1", "Axel_F_Remix_s1"],
