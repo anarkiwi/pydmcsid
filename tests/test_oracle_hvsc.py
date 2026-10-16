@@ -127,3 +127,29 @@ def test_multi_song_full_length(rel, song):
     assert aligned_match(
         oracle, rendered, max_lead=8
     ), f"tune {rel} song {song} diverges from the sidtrace oracle"
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize(
+    "rel,song",
+    [("DEMOS/A-F/FST.sid", 1), ("DEMOS/A-F/Axel_F_Remix.sid", 1)],
+    ids=["FST_s1", "Axel_F_Remix_s1"],
+)
+def test_orderlist_loop_full_length(rel, song):
+    """A song rendered past its orderlist loop still reproduces the oracle.
+
+    The orderlist ``$ff`` handler either jumps to a loop target (the byte after
+    ``$ff``, a JSR build) or resets the order pointer to 0 (a ``STA $00`` build);
+    both build families ship in HVSC and the target must be read per-body.
+    """
+    path = resolve_tune(rel, cache_dir=_HVSC)
+    if path is None:
+        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
+    frames = 6000  # past the song's orderlist loop for both tunes
+    rendered = np.asarray(
+        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
+    ).tolist()
+    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
+    assert aligned_match(
+        oracle, rendered, max_lead=8
+    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
