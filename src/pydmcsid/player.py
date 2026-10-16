@@ -56,7 +56,7 @@ class DmcPlayer(MemPlayer):
     """The single DMC per-frame player, a :class:`~pysidtracker.MemPlayer`.
 
     One class deriving from :class:`~pysidtracker.MemPlayer` owns the shared
-    machinery -- the flat 64 KiB memory mount, ``_wr`` SID writes, the post-init
+    machinery -- the flat memory mount, ``_wr`` SID writes, the post-init
     snapshot, the diffing ``play_frame`` and the ``render_grid``/``iter_frames``
     drivers -- so each DMC generation implements only ``_setup`` (resolve the
     per-tune table bases from the resident code), ``_init`` (the tune's init) and
@@ -107,7 +107,7 @@ class DmcPlayer(MemPlayer):
 
     @property
     def m(self) -> bytearray:
-        """The mounted 64 KiB working memory (mutated during playback)."""
+        """The mounted working memory (mutated during playback)."""
         return self._mem
 
     def _operand(self, code_off: int) -> int:
@@ -1604,7 +1604,7 @@ class Player95(DmcPlayer):
         """Run the ``$95`` init for the selected subtune."""
         m = self.m
         a = self._a
-        y = (subtune * 2) & 0xFF
+        y = (subtune * 8) & 0xFF
         for x in range(3):
             m[a(0x17D9) + x] = m[(self.b_order + y) & 0xFFFF]
             m[a(0x17DC) + x] = m[(self.b_order + y + 1) & 0xFFFF]
@@ -2200,7 +2200,7 @@ class Player937(PlayerNN):
         """The ``LDX #imm`` seed/reload immediate feeding ``STX counter`` at ``lo``.
 
         Scans the short wrapper for the ``A2 imm : 8E <counter>`` pair; falls back
-        to 1 (the observed seed) if absent, so a malformed wrapper never raises.
+        to 1 if absent, so a malformed wrapper never raises.
         """
         m = self.song.mem
         hi = min(len(m), lo + constants.NN937_WRAP_SCAN)

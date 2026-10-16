@@ -18,10 +18,19 @@ confirmed frame-for-frame against the deterministic ``sidplayfp`` oracle.
 import os
 from pathlib import Path
 
+import numpy as np
 import oracle_hvsc
 import pytest
 
 from pysidtracker import make_oracle_fixtures
+from pysidtracker.oracle import (
+    SIDTRACE_IMAGE,
+    aligned_match,
+    cached_sidtrace,
+    sidtrace_cadence,
+    sidtrace_grid,
+)
+from pysidtracker.testing import TuneFetchError, resolve_tune
 
 # Cache under the workspace (a Docker-daemon-visible path, and what CI persists via
 # actions/cache).  ``$DMC_ORACLE_CACHE`` overrides it; the committed tunecache is
@@ -82,3 +91,39 @@ tune_id, oracle_match = make_oracle_fixtures(
 def test_render_matches_oracle(oracle_match):  # noqa: F811
     """The DMC player reproduces the sidtrace oracle grid frame-for-frame."""
     oracle_match()
+
+
+def _song_oracle(path, song, frames, cache):
+    """A song's (1-based) oracle grid, rendered with ``-o<song>`` (per-song cache)."""
+    csv = cache / f"oracle/song{song}/{path.stem}.csv.zst"
+    rows = cached_sidtrace(
+        path, csv, seconds=frames // 50 + 2, image=SIDTRACE_IMAGE, song=song
+    )
+    cpf = sidtrace_cadence(rows)
+    return np.asarray(sidtrace_grid(rows, cycles_per_frame=cpf, reg_count=25), np.int16)
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize(
+    "rel,song",
+    [("MUSICIANS/C/Chotaire/Old_Times.sid", 2)],
+    ids=["Old_Times_s2"],
+)
+def test_multi_song_full_length(rel, song):
+    """A later subtune of a multi-song DMC reproduces the oracle full-length.
+
+    The $95 per-subtune init record (order-list pointers, tempo, $D418 base) is
+    indexed by ``subtune * 8``; song 1 is right at any stride, but songs 2+ were
+    mis-indexed and diverged from frame 0 -- this pins that whole-song class.
+    """
+    path = resolve_tune(rel, cache_dir=_HVSC)
+    if path is None:
+        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
+    frames = 1500
+    rendered = np.asarray(
+        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
+    ).tolist()
+    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
+    assert aligned_match(
+        oracle, rendered, max_lead=8
+    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
