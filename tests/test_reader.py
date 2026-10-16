@@ -109,24 +109,14 @@ def test_wrapper_body_repoints_self_modifying_selector():
     from pydmcsid.reader import Song, wrapper_body
 
     mem = bytearray(0x4000)
-    mem[0x1000 : 0x1400] = _dmc_body(0x1000, init_rel=0x37)
-    mem[0x2000 : 0x2400] = _dmc_body(0x2000, init_rel=0x37)
-    mem[0x3000 : 0x3003] = bytes((0x4C, 0x06, 0x30))  # init $3000 -> $3006
-    mem[0x3003 : 0x3006] = bytes((0x4C, 0x03, 0x10))  # play $3003 -> $1003
-    code = bytes(
-        (
-            0xAA,  # TAX
-            0xBD, 0x28, 0x30,  # LDA $3028,X
-            0x8D, 0x05, 0x30,  # STA $3005 (the play high byte)
-            0xBD, 0x34, 0x30,  # LDA $3034,X
-            0x8D, 0x22, 0x30,  # STA $3022 (the side subtune cell)
-            0xA9, 0x00,  # LDA #$00
-            0x4C, 0x00, 0x10,  # JMP $1000
-        )
-    )
-    mem[0x3006 : 0x3006 + len(code)] = code
-    mem[0x3028 : 0x302B] = bytes((0x10, 0x20, 0x10))  # play-high: $10 $20 $10
-    mem[0x3034 : 0x3037] = bytes((0x00, 0x00, 0x01))  # subtune: 0 0 1
+    mem[0x1000:0x1400] = _dmc_body(0x1000, init_rel=0x37)
+    mem[0x2000:0x2400] = _dmc_body(0x2000, init_rel=0x37)
+    mem[0x3000:0x3003] = bytes.fromhex("4C0630")  # init $3000 -> $3006
+    mem[0x3003:0x3006] = bytes.fromhex("4C0310")  # play $3003 -> $1003
+    # selector: TAX; LDA $3028,X -> STA $3005 (play hi); LDA $3034,X -> STA $3022 (subtune); JMP $1000
+    mem[0x3006:0x3018] = bytes.fromhex("AABD28308D0530BD34308D2230A9004C0010")
+    mem[0x3028:0x302B] = bytes.fromhex("102010")  # play-high table: $10 $20 $10
+    mem[0x3034:0x3037] = bytes.fromhex("000001")  # subtune table: 0 0 1
     song = Song(
         mem=mem,
         load=0x1000,
