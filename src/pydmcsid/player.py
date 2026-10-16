@@ -150,6 +150,10 @@ class DmcPlayer(MemPlayer):
         # ``inst[2]>>4`` chain, 2 for the ``$17`` no-op-patched build (read from
         # the code, so hand-patched builds are modelled without regressing stock).
         self._pw_min_shift = pw_min_shift(mem, song.base)
+        # $ff loop: JSR handler jumps to a target (next byte) vs STA $00 resets to order 0
+        self._order_loop_target = (
+            mem[song.base + constants.ORDER_LOOP_HANDLER_REL] == constants.ORDER_LOOP_JSR_OP
+        )
         # A few builds redirect the play-body tail ($10AC STA $D417) to a helper
         # that also forces the $D418 filter-type nibble every frame; the forced
         # immediate (OR'd with $1717) is read from the code (``None`` = stock).
@@ -259,7 +263,7 @@ class DmcPlayer(MemPlayer):
             if a < 0x80:
                 break
             if a == 0xFF:
-                m[a1726] = 0
+                m[a1726] = self._order_loop(f8, f9, y)
                 continue
             if a == 0xFE:
                 m[a100c] = 0
@@ -278,6 +282,12 @@ class DmcPlayer(MemPlayer):
         nf9 = m[self.b_pat_hi + yp]
         self._curpat[x] = (nf8, nf9)
         self._patternwalk(x, nf8, nf9)
+
+    def _order_loop(self, f8: int, f9: int, y: int) -> int:
+        """The new order index after an orderlist ``$ff`` loop ($10df handler)."""
+        if self._order_loop_target:
+            return self.m[self._ptr(f8, f9) + ((y + 1) & 0xFF)]
+        return 0
 
     # -- pattern walk ($110C) --------------------------------------------
     def _patternwalk(self, x: int, f8: int, f9: int) -> None:

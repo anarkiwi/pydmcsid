@@ -78,6 +78,8 @@ PATTERN_LO_OP = 0x103  # LDA $1829,Y @ $1102  (pattern ptr lo)
 PATTERN_HI_OP = 0x108  # LDA $182D,Y @ $1107  (pattern ptr hi)
 ORDER_TABLE_OP = 0x3E  # LDA $17F0,Y @ $103D  (per-voice orderlist base table)
 ORDER_TABLE_OP_V1D = 0x51  # LDA <ordertable>,Y @ $1050 (init-$1d relocated the read)
+ORDER_LOOP_HANDLER_REL = 0xDF  # orderlist $ff handler @ $10df: JSR (loop target) or STA $00 (reset 0)
+ORDER_LOOP_JSR_OP = 0x20  # JSR abs -- the handler reads orderlist[order+1] as the target
 VIB_SEED_OP = 0x2F2  # LDA <vibscale>,Y @ $12F1 (init-$1d vib-delta seed, note-indexed)
 
 # init-$1d relocates a 9-cell work block (per-voice note[3]/inst[3] + the three
