@@ -25,16 +25,20 @@ jobs:
         run: black --check src/pydmcsid tests scripts
       - name: pylint
         run: pylint src/pydmcsid tests scripts
-      - name: Cache HVSC test tunes
-        # DMC tunes are HVSC copyright works (NEVER committed); they are fetched
-        # on demand into the gitignored tunecache.  Cache that dir across runs,
-        # keyed on the corpus/tune lists + fetch script, so tunes download once.
+      - name: Cache test fixtures
+        # Tunes are HVSC copyright works and the native editor disks are csdb
+        # copyright works (never committed); the gitignored tunecache is cached
+        # across runs, keyed on the manifest/tune lists, so downloads happen once.
         uses: actions/cache@v6
         with:
           path: tests/.tunecache
-          key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/helpers.py', 'tests/test_oracle_hvsc.py', 'scripts/fetch_tunes.py') }}
+          key: hvsc-tunecache-${{ hashFiles('tests/fixtures/dmc_corpus.txt', 'tests/fixtures/dmc_native_manifest.txt', 'tests/helpers.py', 'tests/test_oracle_hvsc.py', 'tests/test_native.py', 'scripts/fetch_tunes.py') }}
           restore-keys: |
             hvsc-tunecache-
+      - name: Fetch native editor disks
+        # Resume-safe: reuses the cached dl/ tree and release pages, only
+        # downloads what the manifest pins and the cache lacks.
+        run: pysidtracker fixtures fetch tests/fixtures/dmc_native_manifest.txt --cache tests/.tunecache/native
       - name: pytest + coverage (> 85%, oracle excluded)
         # The non-oracle suite fetches tunes from the HVSC mirror into the cached
         # tunecache; the byte-exact-vs-oracle job below is the Docker gate.
