@@ -1,6 +1,6 @@
 # DMC (Demo Music Creator) editor disks and V7.0 editor, pinned by SHA-256.
 # Copyright works -- never committed. Recreate the cache from this manifest:
-#   pysidtracker fixtures fetch tests/fixtures/dmc_native_manifest.txt --cache tests/.tunecache/native
+#   pysidtracker fixtures fetch tests/fixtures/dmc_native_manifest.txt
 # Format (load_manifest / write_manifest):
 # release_id<TAB>name<TAB>sha256<TAB>description
 2598	dmc_12.d64	becea4cd320885c79fe5f42d0b8ac420177935b9b789c841281d03fd02635343	DMC V1.2 editor disk
