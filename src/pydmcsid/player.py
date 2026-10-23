@@ -28,7 +28,6 @@ from typing import List, Tuple
 
 from pysidtracker import MemPlayer
 from pysidtracker.registers import (
-    PW_HI_REGS,
     SID_BASE,
     SID_FILTER_HI,
     SID_MODE_VOL,
@@ -51,8 +50,6 @@ from pydmcsid.reader import (
     wrapper_body,
 )
 
-_PW_HI = tuple(PW_HI_REGS)
-
 
 class DmcPlayer(MemPlayer):
     """The single DMC per-frame player, a :class:`~pysidtracker.MemPlayer`.
@@ -72,8 +69,11 @@ class DmcPlayer(MemPlayer):
 
     The 25-register grid (``$D400..$D418``, forward-filled) is
     :meth:`~pysidtracker.MemPlayer.render_grid`; the pulse-width-high registers are
-    masked to 4 bits in :meth:`snapshot` so the grid matches the sidtrace oracle.
+    masked to 4 bits (:attr:`~pysidtracker.MemPlayer.MASK_PW_HI`) so the grid matches
+    the sidtrace oracle.
     """
+
+    MASK_PW_HI = True
 
     # A faithful integer transcription: the per-frame methods carry the player's
     # exact branch/return density (the byte-exactness lives in those branches).
@@ -188,13 +188,6 @@ class DmcPlayer(MemPlayer):
     def _ptr(f8: int, f9: int) -> int:
         """Compose a 16-bit zero-page pointer."""
         return (f9 << 8) | f8
-
-    def snapshot(self) -> List[int]:
-        """The 25 SID registers, pulse-width-high masked to 4 bits (oracle shape)."""
-        regs = super().snapshot()
-        for reg in _PW_HI:
-            regs[reg] &= 0x0F
-        return regs
 
     # -- init ($1037) ----------------------------------------------------
     def _init(self, subtune: int) -> None:
