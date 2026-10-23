@@ -4,10 +4,17 @@ import pytest
 
 import pysidtracker
 from pysidtracker import PlayroutineKind
+from pysidtracker.asm6502 import assemble
+from pysidtracker.header import write_psid
 
 import pydmcsid
 from pydmcsid import DmcSidParser
 from pydmcsid.errors import DmcError, DmcFormatError, DmcParseError, SidParseError
+
+
+def _asm(source, org=0):
+    """The machine code of 6502 ``source`` assembled at ``org``."""
+    return assemble(source, org)[0]
 
 
 def test_read_sid(tune_path):
@@ -20,15 +27,9 @@ def test_read_sid(tune_path):
 
 def test_parse_rejects_non_dmc():
     """A non-DMC image (no JMP-table signature) is rejected."""
-    # A minimal PSID header loading $1000 with non-DMC body bytes.
-    body = bytes([0x00] * 64)
-    header = bytearray(0x7C)
-    header[0:4] = b"PSID"
-    header[6:8] = (0x7C).to_bytes(2, "big")  # data offset
-    header[8:10] = (0x1000).to_bytes(2, "big")  # load
-    header[0x0E:0x10] = (1).to_bytes(2, "big")  # songs
+    psid = write_psid(load=0x1000, init=0x1000, play=0x1003, image=bytes(64))
     with pytest.raises(SidParseError):
-        pydmcsid.parse(bytes(header) + body)
+        pydmcsid.parse(psid)
 
 
 def test_parse_prg_too_short():
@@ -39,11 +40,9 @@ def test_parse_prg_too_short():
 
 def _dmc_jmp_table(base, init_rel=0x1D):
     """The 4-entry DMC JMP table (init/play/stop/FUN) for a player at ``base``."""
-    tbl = bytearray()
-    for rel in (init_rel, 0x85, 0x62F, 0x63E):
-        tgt = base + rel
-        tbl += bytes([0x4C, tgt & 0xFF, (tgt >> 8) & 0xFF])
-    return bytes(tbl)
+    return _asm(
+        "\n".join(f"JMP ${base + rel:04X}" for rel in (init_rel, 0x85, 0x62F, 0x63E))
+    )
 
 
 def _dmc_body(base, init_rel=0x1D, marker=0xFE):
@@ -56,7 +55,7 @@ def _dmc_body(base, init_rel=0x1D, marker=0xFE):
     body = bytearray(_dmc_jmp_table(base, init_rel))
     body += b"\x00" * (0x400 - len(body))
     tempo = (base + 0x718) & 0xFFFF
-    body[0x85:0x88] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
+    body[0x85:0x88] = _asm(f"DEC ${tempo:04X}")
     body[0x126] = marker
     # Seed the $1d note/inst/filter cell operands (note, note+3, note+6) so a
     # $7e-marker body satisfies the modelled-layout check in ``dmc_variant``.
@@ -72,8 +71,7 @@ def _dmc_body(base, init_rel=0x1D, marker=0xFE):
     body[0x230] = 0x20
     # Stock $37 release: the inline gate-off store ``STA $100f,X`` at $133d (a
     # patched ``JSR`` there marks a scene hard-restart edit; see v37_release_mode).
-    gate = (base + 0x0F) & 0xFFFF
-    body[0x33D:0x340] = bytes([0x9D, gate & 0xFF, (gate >> 8) & 0xFF])
+    body[0x33D:0x340] = _asm(f"STA ${(base + 0x0F) & 0xFFFF:04X},X")
     return bytes(body)
 
 
@@ -186,11 +184,7 @@ def test_reorganised_body_rejected():
     # init/play JMP table but play targets base+$a1 (the sidid 40/a1 cluster) with
     # an all-zero body: the $a1 anchor requires the family body signature, so this
     # neither matches the $85 body nor the $a1 body and is not a DMC.
-    tbl = bytearray()
-    for rel in (0x40, 0xA1):
-        tgt = 0x1000 + rel
-        tbl += bytes([0x4C, tgt & 0xFF, (tgt >> 8) & 0xFF])
-    prg = b"\x00\x10" + bytes(tbl) + b"\x00" * 0x300
+    prg = b"\x00\x10" + _asm("JMP $1040\nJMP $10A1") + b"\x00" * 0x300
     with pytest.raises(SidParseError):
         pydmcsid.parse(prg)
 
@@ -210,12 +204,12 @@ def _a1_body(base, sr_clear=0x99, gate=0x9D, order_tbl=0x1900):
 
     del base  # bodies are authored load-relative to $1000
     mem = bytearray(0x2000)
-    mem[0:6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0xA1, 0x10])  # play JMP -> base+$a1
-    # init order-table copy store site: B9 <order,Y> : 9D CF 17 (STA $17cf,X)
-    mem[0x46:0x4C] = bytes([0xB9, order_tbl & 0xFF, order_tbl >> 8, 0x9D, 0xCF, 0x17])
+    mem[0:6] = _asm("JMP $1040\nJMP $10A1")  # play JMP -> base+$a1
+    # init order-table copy store site
+    mem[0x46:0x4C] = _asm(f"LDA ${order_tbl:04X},Y\nSTA $17CF,X")
     for off in range(0xA1, 0x70F):  # NOP-fill the play body
         mem[off] = 0xEA
-    mem[0xA1:0xA4] = bytes([0xAD, 0x00, 0x19])  # LDA $1900: a per-tune-data operand
+    mem[0xA1:0xA4] = _asm("LDA $1900")  # a per-tune-data operand
     mem[constants.A1_REL_SR_CLEAR_REL] = sr_clear  # release SR-clear opcode
     mem[constants.A1_REL_GATE_REL] = gate  # release gate-mask opcode
     return bytes(mem)
@@ -291,7 +285,7 @@ def test_a1_norm_body_straddling_instruction_returns_none():
 
     mem = bytearray(0x10000)
     base = 0x1000
-    mem[base : base + 6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0xA1, 0x10])  # play->$a1
+    mem[base : base + 6] = _asm("JMP $1040\nJMP $10A1")  # play->$a1
     for off in range(base + 0xA1, base + 0x70F):  # JMP-abs (3-byte) fill: straddles
         mem[off] = 0x4C
     assert _norm_a1_body(mem, base) is None  # no IndexError
@@ -313,12 +307,12 @@ def _n95_body(base, order_tbl=0x1900, reload_seed=0x07):
 
     del base  # bodies are authored load-relative to $1000
     mem = bytearray(0x2000)
-    mem[0:6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0x95, 0x10])  # play JMP -> base+$95
-    # init order-table copy store site: B9 <order,Y> : 9D D9 17 (STA $17d9,X)
-    mem[0x46:0x4C] = bytes([0xB9, order_tbl & 0xFF, order_tbl >> 8, 0x9D, 0xD9, 0x17])
+    mem[0:6] = _asm("JMP $1040\nJMP $1095")  # play JMP -> base+$95
+    # init order-table copy store site
+    mem[0x46:0x4C] = _asm(f"LDA ${order_tbl:04X},Y\nSTA $17D9,X")
     for off in range(0x95, 0x719):  # NOP-fill the play body
         mem[off] = 0xEA
-    mem[0x95:0x98] = bytes([0xAD, 0x00, 0x19])  # LDA $1900: a per-tune-data operand
+    mem[0x95:0x98] = _asm("LDA $1900")  # a per-tune-data operand
     mem[constants.N95_RELOAD_SEED_REL] = reload_seed  # self-modified reload seed
     return bytes(mem)
 
@@ -398,7 +392,7 @@ def test_n95_norm_body_straddling_instruction_returns_none():
 
     mem = bytearray(0x10000)
     base = 0x1000
-    mem[base : base + 6] = bytes([0x4C, 0x40, 0x10, 0x4C, 0x95, 0x10])  # play->$95
+    mem[base : base + 6] = _asm("JMP $1040\nJMP $1095")  # play->$95
     mem[base + 0x95] = 0xEA  # a 1-byte NOP shifts the JMP-abs run off alignment
     for off in range(base + 0x96, base + 0x719):  # JMP-abs (3-byte) fill: straddles
         mem[off] = 0x4C
@@ -421,13 +415,11 @@ def _nn_body(note_onset=0x4C, vibrato=0x2C, second_play=0x1086):
     """
     base = 0x1001  # virtual engine base (load $1000 + 1)
     mem = bytearray(0x2000)
-    mem[0x000:0x006] = bytes([0x4C, 0x47, 0x19, 0x4C, 0x4A, 0x19])  # JMP init/play
-    mem[0x94A:0x94D] = bytes(  # second-level play JMP -> the $85 body
-        [0x4C, second_play & 0xFF, (second_play >> 8) & 0xFF]
-    )
+    mem[0x000:0x006] = _asm("JMP $1947\nJMP $194A")  # JMP init/play
+    mem[0x94A:0x94D] = _asm(f"JMP ${second_play:04X}")  # second level -> $85 body
     tempo = (base + 0x718) & 0xFFFF  # DEC base_eng+$718 -- the play-body anchor
     off = (second_play - 0x1000) & 0xFFFF
-    mem[off : off + 3] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
+    mem[off : off + 3] = _asm(f"DEC ${tempo:04X}")
     mem[(base + 0x318 - 0x1000) & 0xFFFF] = note_onset  # note-onset discriminator
     mem[(base + 0x58E - 0x1000) & 0xFFFF] = vibrato  # vibrato-setup discriminator
     return bytes(mem)
@@ -485,8 +477,8 @@ def test_nn_dispatch_bounds_safe():
 
     mem = bytearray(0x10000)
     base = 0x1000
-    mem[base : base + 6] = bytes([0x4C, 0x47, 0x19, 0x4C, 0x4A, 0x19])
-    mem[base + 0x94A : base + 0x94D] = bytes([0x4C, 0xFF, 0xFF])  # JMP $FFFF
+    mem[base : base + 6] = _asm("JMP $1947\nJMP $194A")
+    mem[base + 0x94A : base + 0x94D] = _asm("JMP $FFFF")
     assert _nn_engine_base(mem, base + 0x94A, base) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
@@ -505,18 +497,22 @@ def _nn937_image(reload=6, seed=1):
     mem = bytearray(0x10000)
     body = _nn_body()
     mem[0x1000 : 0x1000 + len(body)] = body
-    mem[0x1937:0x193F] = bytes(  # secondary body: LDA $1927 / BEQ / JSR $18f1 / RTS
-        [0xAD, 0x27, 0x19, 0xF0, 0x04, 0x20, 0xF1, 0x18]
-    )
-    mem[0x18F1:0x18F5] = bytes([0xAC, 0x26, 0x19, 0xB9])  # refresh: LDY $1926 / LDA ..
+    mem[0x1937:0x193F] = _asm("LDA $1927\nBEQ $1940\nJSR $18F1", 0x1937)  # secondary
+    mem[0x18F1:0x18F5] = _asm("LDY $1926\nLDA $0000,Y", 0x18F1)[:4]  # refresh
     mem[0x1927] = 0x01  # enable flag
     ctr = 0x24B7
-    mem[0x2400:0x2408] = bytes(  # init: JSR $1000 / LDX #seed / STX ctr / RTS
-        [0x20, 0x00, 0x10, 0xA2, seed, 0x8E, ctr & 0xFF, ctr >> 8]
-    ) + bytes([0x60])
-    mem[0x2411:0x2420] = bytes(  # play: DEC ctr / LDX#0 / BNE / LDX #reload / STX ctr
-        [0xCE, ctr & 0xFF, ctr >> 8, 0xA2, 0x00, 0xD0, 0x08, 0xA2, reload]
-    ) + bytes([0x8E, ctr & 0xFF, ctr >> 8, 0x4C, 0x03, 0x10])
+    mem[0x2400:0x2409] = _asm(
+        f"JSR $1000\nLDX #${seed:02X}\nSTX ${ctr:04X}\nRTS", 0x2400
+    )  # init
+    mem[0x2411:0x2420] = _asm(
+        f"""DEC ${ctr:04X}
+        LDX #$00
+        BNE $2420
+        LDX #${reload:02X}
+        STX ${ctr:04X}
+        JMP $1003""",
+        0x2411,
+    )  # play: a divide-by-reload divider
     return mem, 0x2411, 0x2400
 
 
@@ -633,16 +629,13 @@ def test_dmc_byte_exact_out_of_range():
 def _put_release(body, base, jsr_target=None, adsr_clear=True):
     """Patch the $133d release site: stock store, or a JSR to a mod routine."""
     if jsr_target is None:  # stock inline gate-off store
-        gate = (base + 0x0F) & 0xFFFF
-        body[0x33D:0x340] = bytes([0x9D, gate & 0xFF, (gate >> 8) & 0xFF])
+        body[0x33D:0x340] = _asm(f"STA ${(base + 0x0F) & 0xFFFF:04X},X")
         return
-    body[0x33D:0x340] = bytes([0x20, jsr_target & 0xFF, (jsr_target >> 8) & 0xFF])
+    body[0x33D:0x340] = _asm(f"JSR ${jsr_target:04X}")
     off = jsr_target - base
-    clear = bytes([0xA9, 0x00, 0x99, 0x05, 0xD4, 0x99, 0x06, 0xD4])  # LDA #0;AD/SR=0
-    if adsr_clear:  # STA mask; LDY stride; clear AD/SR; RTS
-        routine = bytes([0x9D, 0x0F, 0x10, 0xBC, 0x0D, 0x17]) + clear + b"\x60"
-    else:  # bare STA mask; RTS -- then DEAD AD/SR stores past the RTS (Coool shape)
-        routine = bytes([0x9D, 0x0F, 0x10, 0x60, 0xBC, 0x0D, 0x17]) + clear + b"\x60"
+    clear = "LDY $170D,X\nLDA #$00\nSTA $D405,Y\nSTA $D406,Y\nRTS"
+    # STA mask; then clear AD/SR, or RTS first with DEAD AD/SR stores past it (Coool)
+    routine = _asm("STA $100F,X\n" + ("" if adsr_clear else "RTS\n") + clear)
     body[off : off + len(routine)] = routine
 
 
@@ -689,10 +682,8 @@ def test_pw_min_shift_stock_and_patched():
     """
     from pydmcsid.reader import pw_min_shift
 
-    store = bytes([0x9D, 0x56, 0x17])  # STA $1756,X -- terminates the chain
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
-    m[0x24B:0x24F] = bytes([0x4A, 0x4A, 0x4A, 0x4A])  # four LSR A
-    m[0x24F:0x252] = store
+    m[0x24B:0x252] = _asm("LSR A\nLSR A\nLSR A\nLSR A\nSTA $1756,X")
     stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
     assert pw_min_shift(stock.mem, stock.base) == 4
 
@@ -712,7 +703,7 @@ def test_v37_onset_ctrl_stock_and_patched():
     from pydmcsid.reader import v37_onset_ctrl
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x37))
-    m[0x1D9:0x1DE] = bytes([0xA9, 0x08, 0x99, 0x04, 0xD4])  # LDA #$08 ; STA $D404,Y
+    m[0x1D9:0x1DE] = _asm("LDA #$08\nSTA $D404,Y")
     stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
     assert v37_onset_ctrl(stock.mem, stock.base) == 0x08
 
@@ -737,7 +728,7 @@ def test_v1d_note_onset_stock_and_bit_noop():
     from pydmcsid.reader import v1d_note_onset
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
-    m[0x1D9:0x1DE] = bytes([0xA9, 0x08, 0x20, 0xFB, 0x17])  # LDA #$08 ; JSR $17FB
+    m[0x1D9:0x1DE] = _asm("LDA #$08\nJSR $17FB")
     stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
     assert v1d_note_onset(stock.mem, stock.base) == (0x08, 0x0F)
 
@@ -757,15 +748,13 @@ def test_tail_d418_force_stock_and_patched():
     from pydmcsid.reader import tail_d418_force
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
-    m[0xAC:0xAF] = bytes([0x8D, 0x17, 0xD4])  # stock STA $D417
+    m[0xAC:0xAF] = _asm("STA $D417")  # stock
     stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
     assert tail_d418_force(stock.mem, stock.base) is None
 
     m2 = bytearray(m)
-    m2[0xAC:0xAF] = bytes([0x20, 0x80, 0x13])  # JSR $1380 (helper in-body)
-    m2[0x380:0x38B] = bytes(
-        [0x8D, 0x17, 0xD4, 0xA9, 0x10, 0x0D, 0x17, 0x17, 0x8D, 0x18, 0xD4]
-    )
+    m2[0xAC:0xAF] = _asm("JSR $1380")  # helper in-body
+    m2[0x380:0x38B] = _asm("STA $D417\nLDA #$10\nORA $1717\nSTA $D418")
     patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
     assert tail_d418_force(patched.mem, patched.base) == 0x10
 
@@ -783,7 +772,7 @@ def _wrapped_body(base, stub, init_rel=0x1D, marker=0x7E):
     body[0x900 : 0x900 + len(stub)] = stub
     mem = bytearray(0x10000)
     mem[base : base + len(body)] = body
-    mem[base + 0x930 : base + 0x933] = bytes([0x4C, base & 0xFF, base >> 8])  # JMP init
+    mem[base + 0x930 : base + 0x933] = _asm(f"JMP ${base:04X}")  # init
     return mem, play, (base + 0x930) & 0xFFFF
 
 
@@ -791,8 +780,7 @@ def test_wrapper_pure_thunk_admitted():
     """A play vector that is a bare ``JMP base+3`` is a benign pass-through."""
     from pydmcsid.reader import dmc_byte_exact
 
-    b3 = 0x1003
-    mem, play, init = _wrapped_body(0x1000, bytes([0x4C, b3 & 0xFF, b3 >> 8]))
+    mem, play, init = _wrapped_body(0x1000, _asm("JMP $1003"))
     assert play != 0x1003
     assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -806,10 +794,15 @@ def test_wrapper_transparent_divider_admitted():
     """
     from pydmcsid.reader import dmc_byte_exact
 
-    ctr = 0x1930
-    stub = bytes(
-        [0xCE, ctr & 0xFF, ctr >> 8, 0xA2, 0x00, 0xD0, 0x08, 0xA2, 0x04]
-        + [0x8E, ctr & 0xFF, ctr >> 8, 0x4C, 0x03, 0x10, 0x4C, 0x03, 0x10]
+    stub = _asm(
+        """DEC $1930
+        LDX #$00
+        BNE skip
+        LDX #$04
+        STX $1930
+        JMP $1003
+        skip: JMP $1003""",
+        0x1900,
     )
     mem, play, init = _wrapped_body(0x1000, stub)
     assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
@@ -819,7 +812,7 @@ def test_wrapper_register_writing_stub_deferred():
     """A stub that writes a SID register before playing alters the frame -> defer."""
     from pydmcsid.reader import dmc_byte_exact
 
-    stub = bytes([0xA9, 0x0F, 0x8D, 0x18, 0xD4, 0x4C, 0x03, 0x10])  # STA $D418; JMP
+    stub = _asm("LDA #$0F\nSTA $D418\nJMP $1003")
     mem, play, init = _wrapped_body(0x1000, stub)
     assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -828,7 +821,7 @@ def test_wrapper_multispeed_jsr_deferred():
     """A stub that ``JSR``s the body (runs it more than once) is not byte-exact."""
     from pydmcsid.reader import dmc_byte_exact
 
-    stub = bytes([0x20, 0x03, 0x10, 0x4C, 0x03, 0x10])  # JSR $1003 : JMP $1003 (2x)
+    stub = _asm("JSR $1003\nJMP $1003")  # the body twice
     mem, play, init = _wrapped_body(0x1000, stub)
     assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -842,7 +835,7 @@ def test_wrapper_self_modifying_jmp_deferred():
     from pydmcsid.reader import dmc_byte_exact
 
     jmp_lo = (0x1000 + 0x900 + 6 + 1) & 0xFFFF  # operand-low of the trailing JMP
-    stub = bytes([0xBD, 0x00, 0x1A, 0x8D, jmp_lo & 0xFF, jmp_lo >> 8, 0x4C, 0x03, 0x10])
+    stub = _asm(f"LDA $1A00,X\nSTA ${jmp_lo:04X}\nJMP $1003")
     mem, play, init = _wrapped_body(0x1000, stub)
     assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -858,12 +851,10 @@ def test_wrapper_init_patches_jmp_to_base3_admitted():
 
     base = 0x1000
     jmp_hi = (base + 0x900 + 2) & 0xFFFF  # the trailing JMP's operand-high byte
-    stub = bytes([0x4C, 0x03, 0x00])  # JMP $0003 -- WRONG until init patches hi=$10
+    stub = _asm("JMP $0003")  # WRONG until init patches hi=$10
     mem, play, _ = _wrapped_body(base, stub)
     init = (base + 0x930) & 0xFFFF
-    mem[init : init + 8] = bytes(  # LDA #$10 : STA jmp_hi : JMP base (resident)
-        [0xA9, 0x10, 0x8D, jmp_hi & 0xFF, jmp_hi >> 8, 0x4C, base & 0xFF, base >> 8]
-    )
+    mem[init : init + 8] = _asm(f"LDA #$10\nSTA ${jmp_hi:04X}\nJMP ${base:04X}")
     assert dmc_byte_exact(mem, base, play=play, init=init)
     # A patch to a different page (the genuine relocating selector) stays deferred.
     mem[init + 1] = 0x20  # STA hi = $20 -> JMP $2003
@@ -874,10 +865,10 @@ def test_wrapper_bounds_safe_never_raises():
     """A play vector at the top of memory is deferred, never an IndexError."""
     from pydmcsid.reader import dmc_byte_exact
 
-    mem, _play, init = _wrapped_body(0x1000, bytes([0x4C, 0x03, 0x10]))
+    mem, _play, init = _wrapped_body(0x1000, _asm("JMP $1003"))
     assert dmc_byte_exact(mem, 0x1000, play=0xFFFE, init=init) is False
     # A stub that runs off the end of the image (no terminating JMP) is deferred.
-    mem2, play2, init2 = _wrapped_body(0x1000, bytes([0xEA] * 4))  # NOPs, no JMP
+    mem2, play2, init2 = _wrapped_body(0x1000, _asm("NOP\n" * 4))  # no JMP
     trunc = bytes(mem2[0x1000 : 0x1000 + 0x904])
     tmem = bytearray(0x10000)
     tmem[0x1000 : 0x1000 + len(trunc)] = trunc
@@ -888,7 +879,7 @@ def test_v37_wrapper_register_writing_deferred():
     """A v37 tune whose play stub writes a SID register is not byte-exact."""
     from pydmcsid.reader import dmc_byte_exact
 
-    stub = bytes([0xA9, 0x0F, 0x8D, 0x18, 0xD4, 0x4C, 0x03, 0x10])  # STA $D418; JMP
+    stub = _asm("LDA #$0F\nSTA $D418\nJMP $1003")
     mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
     assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -898,7 +889,7 @@ def test_v37_wrapper_self_modifying_deferred():
     from pydmcsid.reader import dmc_byte_exact
 
     jmp_lo = (0x1000 + 0x900 + 6 + 1) & 0xFFFF
-    stub = bytes([0xBD, 0x00, 0x1A, 0x8D, jmp_lo & 0xFF, jmp_lo >> 8, 0x4C, 0x03, 0x10])
+    stub = _asm(f"LDA $1A00,X\nSTA ${jmp_lo:04X}\nJMP $1003")
     mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
     assert not dmc_byte_exact(mem, 0x1000, play=play, init=init)
 
@@ -907,8 +898,7 @@ def test_v37_wrapper_benign_admitted():
     """A v37 tune with a benign pass-through wrapper is still byte-exact."""
     from pydmcsid.reader import dmc_byte_exact
 
-    b3 = 0x1003
-    stub = bytes([0x4C, b3 & 0xFF, b3 >> 8])  # bare JMP base+3
+    stub = _asm("JMP $1003")  # bare JMP base+3
     mem, play, init = _wrapped_body(0x1000, stub, marker=0xFE)
     assert dmc_byte_exact(mem, 0x1000, play=play, init=init)
 

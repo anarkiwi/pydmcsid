@@ -8,6 +8,7 @@ frame-for-frame on the py65 oracle (the packed form the DMC editor loads).
 import pytest
 
 import pydmcsid
+from pysidtracker.asm6502 import assemble
 from pysidtracker.header import PSID_MAGIC, RSID_MAGIC
 from pysidtracker.oracle import aligned_match, register_grid
 
@@ -70,14 +71,9 @@ def test_write_dispatch_by_suffix(tune_path, tmp_path):
 def test_prg_roundtrip_from_bare_prg():
     """A Song parsed from a bare ``.prg`` (no header) still serializes back."""
     base = 0x1000
-    tbl = bytearray()
-    for rel in (0x1D, 0x85, 0x62F, 0x63E):
-        tgt = base + rel
-        tbl += bytes([0x4C, tgt & 0xFF, (tgt >> 8) & 0xFF])
-    body = bytearray(tbl)
-    body += b"\x00" * (0x300 - len(body))
-    tempo = (base + 0x718) & 0xFFFF
-    body[0x85:0x88] = bytes([0xCE, tempo & 0xFF, (tempo >> 8) & 0xFF])
+    body = bytearray(0x300)
+    body[:12] = assemble("JMP $101D\nJMP $1085\nJMP $162F\nJMP $163E", base)[0]
+    body[0x85:0x88] = assemble("DEC $1718", base)[0]
     body[0x126] = 0xFE
     prg = bytes((base & 0xFF, base >> 8)) + bytes(body)
     song = pydmcsid.parse(prg)

@@ -15,28 +15,12 @@ its ``$937`` CIA-multispeed wrapper, and the benign play-wrapper builds -- each
 confirmed frame-for-frame against the deterministic ``sidplayfp`` oracle.
 """
 
-import os
-from pathlib import Path
-
-import numpy as np
-import oracle_hvsc
 import pytest
 
 from pysidtracker import make_oracle_fixtures
-from pysidtracker.oracle import (
-    SIDTRACE_IMAGE,
-    aligned_match,
-    cached_sidtrace,
-    sidtrace_cadence,
-    sidtrace_grid,
-)
-from pysidtracker.testing import TuneFetchError, resolve_tune
+from pysidtracker.testing import assert_oracle_match
 
-# Cache under the workspace (a Docker-daemon-visible path, and what CI persists via
-# actions/cache).  ``$DMC_ORACLE_CACHE`` overrides it; the committed tunecache is
-# reused as the HVSC cache so a local run needs no re-download.
-_CACHE = Path(os.environ.get("DMC_ORACLE_CACHE", ".oracle-cache"))
-_HVSC = Path(os.environ.get("DMC_TUNECACHE", "tests/.tunecache"))
+from pydmcsid import DmcPlayer
 
 # One representative per DMC generation / play-routine variation, byte-exact
 # against the sidtrace oracle.
@@ -72,18 +56,8 @@ TUNES = {
 }
 
 
-def _render(data, nframes):
-    # Render a few extra frames so ``aligned_match`` can skip the silent lead-in a
-    # startup gate (the $a1 two-frame gate) or a silent first play call produces.
-    return oracle_hvsc.render(data, 1, nframes + 8)[0].tolist()
-
-
 tune_id, oracle_match = make_oracle_fixtures(
-    TUNES,
-    hvsc_cache=_HVSC,
-    oracle_cache=_CACHE / "csv",
-    render=_render,
-    frames=250,
+    TUNES, player=DmcPlayer, frames=250, max_lead=8
 )
 
 
@@ -93,92 +67,34 @@ def test_render_matches_oracle(oracle_match):  # noqa: F811
     oracle_match()
 
 
-def _song_oracle(path, song, frames, cache):
-    """A song's (1-based) oracle grid, rendered with ``-o<song>`` (per-song cache)."""
-    csv = cache / f"oracle/song{song}/{path.stem}.csv.zst"
-    rows = cached_sidtrace(
-        path, csv, seconds=frames // 50 + 2, image=SIDTRACE_IMAGE, song=song
-    )
-    cpf = sidtrace_cadence(rows)
-    return np.asarray(sidtrace_grid(rows, cycles_per_frame=cpf, reg_count=25), np.int16)
-
-
-@pytest.mark.oracle
-@pytest.mark.parametrize(
-    "rel,song",
-    [("MUSICIANS/C/Chotaire/Old_Times.sid", 2)],
-    ids=["Old_Times_s2"],
-)
-def test_multi_song_full_length(rel, song):
-    """A later subtune of a multi-song DMC reproduces the oracle full-length.
-
-    The $95 per-subtune init record (order-list pointers, tempo, $D418 base) is
-    indexed by ``subtune * 8``; song 1 is right at any stride, but songs 2+ were
-    mis-indexed and diverged from frame 0 -- this pins that whole-song class.
-    """
-    path = resolve_tune(rel, cache_dir=_HVSC)
-    if path is None:
-        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
-    frames = 1500
-    rendered = np.asarray(
-        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
-    ).tolist()
-    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
-    assert aligned_match(
-        oracle, rendered, max_lead=8
-    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
-
-
 @pytest.mark.oracle
 @pytest.mark.parametrize(
     "rel,song,frames",
     [
+        ("MUSICIANS/C/Chotaire/Old_Times.sid", 2, 1500),
         ("GAMES/S-Z/Session.sid", 1, 500),
         ("GAMES/S-Z/Session.sid", 2, 500),
+        ("DEMOS/A-F/FST.sid", 1, 6000),
+        ("DEMOS/A-F/Axel_F_Remix.sid", 1, 6000),
     ],
-    ids=["Session_s1", "Session_s2"],
+    ids=["Old_Times_s2", "Session_s1", "Session_s2", "FST_s1", "Axel_F_Remix_s1"],
 )
-def test_wrapper_selector_full_length(rel, song, frames):
-    """A subtune-selector wrapper's chosen body section reproduces the oracle.
+def test_song_full_length(rel, song, frames):
+    """A whole subtune reproduces the oracle, each pinning a class of song-level bug.
 
-    Session maps each PSID song onto a distinct DMC body section (the init
-    self-modifies the play-JMP high byte) plus a subtune (a side cell); the
-    player must follow init's self-patches to the per-song (body, subtune)
-    pair, not pass the song straight to the primary body.
+    * Old_Times song 2: the $95 per-subtune init record (order-list pointers,
+      tempo, $D418 base) is indexed by ``subtune * 8``; songs 2+ were mis-indexed.
+    * Session: a subtune-selector wrapper maps each PSID song onto a distinct DMC
+      body section (init self-modifies the play-JMP high byte) plus a subtune; the
+      player follows init's self-patches to the per-song (body, subtune) pair.
+    * FST / Axel_F_Remix: rendered past the orderlist loop. The ``$ff`` handler
+      either jumps to a loop target (a JSR build) or resets the order pointer to
+      0 (a ``STA $00`` build); both ship in HVSC and the target is read per-body.
     """
-    path = resolve_tune(rel, cache_dir=_HVSC)
-    if path is None:
-        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
-    rendered = np.asarray(
-        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
-    ).tolist()
-    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
-    assert aligned_match(
-        oracle, rendered, max_lead=8
-    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
-
-
-@pytest.mark.oracle
-@pytest.mark.parametrize(
-    "rel,song",
-    [("DEMOS/A-F/FST.sid", 1), ("DEMOS/A-F/Axel_F_Remix.sid", 1)],
-    ids=["FST_s1", "Axel_F_Remix_s1"],
-)
-def test_orderlist_loop_full_length(rel, song):
-    """A song rendered past its orderlist loop still reproduces the oracle.
-
-    The orderlist ``$ff`` handler either jumps to a loop target (the byte after
-    ``$ff``, a JSR build) or resets the order pointer to 0 (a ``STA $00`` build);
-    both build families ship in HVSC and the target must be read per-body.
-    """
-    path = resolve_tune(rel, cache_dir=_HVSC)
-    if path is None:
-        raise TuneFetchError(f"tune {rel} unavailable (offline, not cached)")
-    frames = 6000  # past the song's orderlist loop for both tunes
-    rendered = np.asarray(
-        oracle_hvsc.render(path.read_bytes(), song, frames + 8)[0], np.int16
-    ).tolist()
-    oracle = _song_oracle(path, song, frames, _CACHE)[:frames].tolist()
-    assert aligned_match(
-        oracle, rendered, max_lead=8
-    ), f"tune {rel} song {song} diverges from the sidtrace oracle"
+    assert_oracle_match(
+        rel,
+        lambda data: DmcPlayer(data, subtune=song - 1),
+        frames=frames,
+        song=song,
+        max_lead=8,
+    )

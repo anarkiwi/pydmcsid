@@ -116,15 +116,16 @@ whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
 of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` reports the decoded
 build: `engine` (the `DmcPlayer` class), `variant`, the library's own
 `byte_exact` claim, `wrapped` (play vector off the standard entry), `stub`
-(player base above the load address), the play `trigger` and `speed` (calls per
-PAL frame), and the code-read build options `release_clears_adsr`,
+(player base above the load address), `pysidtracker.cadence.cadence_info`'s
+`rsid`, play `trigger`, `speed` (calls per PAL frame) and `dynamic`, and the
+code-read build options `release_clears_adsr`,
 `release_clears_sr`, `pw_min_shift`, `tail_d418`, `onset_ctrl`, `onset_adsr`
 (`null` where the engine has no such option). A tune without the DMC player
 signature raises `DmcParseError` (a `pysidtracker.SidParseError`), which the
 survey records as `not_decompiled`.
 
 ```bash
-pip install "pysidtracker[survey]>=0.12.0"
+pip install "pysidtracker[survey]>=0.30.0"
 python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
@@ -132,9 +133,12 @@ python -m pysidtracker.survey report .hvsc-survey/results.csv
 python -m pysidtracker.survey triage .hvsc-survey
 PYTHONPATH=scripts python -m pysidtracker.survey diff $HVSC .hvsc-survey/tunes.csv <md5>_<song> \
     --work .hvsc-survey --render oracle_hvsc:render
+python -m pysidtracker.survey file scripts/oracle_hvsc.py $HVSC/DEMOS/A-F/FST.sid \
+    --song all --frames 3000 --work .hvsc-survey
 ```
 
-`.hvsc-survey/` holds copyright-derived traces and is gitignored.
+`survey file` compares one tune's subtunes (`--song N|N-M|list|all`) with the
+oracle. `.hvsc-survey/` holds copyright-derived traces and is gitignored.
 
 ## Export
 

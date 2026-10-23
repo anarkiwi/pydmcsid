@@ -6,8 +6,7 @@
 
 import numpy as np
 
-from pysidtracker.cadence import playroutine_cadence
-from pysidtracker.registers import PAL_CYCLES_PER_FRAME
+from pysidtracker.cadence import cadence_info
 
 from pydmcsid import DmcPlayer, parse
 from pydmcsid.constants import STD_PLAY_REL
@@ -28,15 +27,13 @@ def render(data, song, nframes):
     """Render 1-based ``song`` of a DMC ``.sid`` and the player build it decoded."""
     tune = parse(data)
     player = DmcPlayer(tune, subtune=song - 1)
-    cadence = playroutine_cadence(data, subtune=song - 1)
     info = {
         "engine": type(player).__name__,
         "variant": tune.variant(),
         "byte_exact": tune.byte_exact(),
         "wrapped": tune.play != (tune.base + STD_PLAY_REL) & 0xFFFF,
         "stub": tune.base != tune.load,
-        "trigger": cadence.source and cadence.source.value,
-        "speed": round(PAL_CYCLES_PER_FRAME / cadence.cycles_per_call),
+        **cadence_info(data, song),
     }
     info.update({k: getattr(player, a, None) for k, a in _BUILD.items()})
     return np.asarray(player.render_grid(nframes), np.int16), info

@@ -41,7 +41,7 @@ grid. `iter_register_writes` follows the shared `py*` register-log convention: o
 
 ```bash
 pip install -e ".[dev]"
-pysidtracker fixtures fetch tests/fixtures/dmc_native_manifest.txt --cache tests/.tunecache/native
+pysidtracker fixtures fetch tests/fixtures/dmc_native_manifest.txt
 pytest
 ```
 
