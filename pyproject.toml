@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    "pysidtracker>=0.35.0",
+    "pysidtracker>=0.38.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +38,9 @@ dev = [
 Homepage = "https://github.com/anarkiwi/pydmcsid"
 Source = "https://github.com/anarkiwi/pydmcsid"
 Issues = "https://github.com/anarkiwi/pydmcsid/issues"
+
+[project.entry-points."pysidtracker.formats"]
+dmc = "pydmcsid.format:dmc_format"
 
 [tool.setuptools.packages.find]
 where = ["src"]
