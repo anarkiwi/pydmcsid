@@ -6,7 +6,7 @@ memory image and its load address; the player walks the resident tables directly
 """
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -875,6 +875,9 @@ class Song:
     name: str = ""
     author: str = ""
     header: Optional[Any] = None  # source PSID/RSID header (None for a bare .prg)
+    # Per-song memo of the code-read decode (variant, byte-exactness), so the
+    # body is decoded once however many consumers ask.
+    _decoded: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def is_dmc(self) -> bool:
         """Whether the resident binary carries the DMC JMP-table signature."""
@@ -882,7 +885,9 @@ class Song:
 
     def variant(self) -> Optional[str]:
         """The DMC body generation (``v37``/``v1d``/``a1``/``n95``/``nn``) or ``None``."""
-        return dmc_variant(self.mem, self.base)
+        if "variant" not in self._decoded:
+            self._decoded["variant"] = dmc_variant(self.mem, self.base)
+        return self._decoded["variant"]
 
     def byte_exact(self) -> bool:
         """Whether pydmcsid's player reproduces this body byte-exact.
@@ -894,7 +899,11 @@ class Song:
         behaviour, or a ``$1d`` build that relocates the AD/SR helper.  See
         :func:`dmc_byte_exact`.
         """
-        return dmc_byte_exact(self.mem, self.base, self.play, self.init)
+        if "byte_exact" not in self._decoded:
+            self._decoded["byte_exact"] = dmc_byte_exact(
+                self.mem, self.base, self.play, self.init
+            )
+        return self._decoded["byte_exact"]
 
 
 def parse(data: bytes) -> Song:
@@ -911,7 +920,8 @@ def parse(data: bytes) -> Song:
     base = find_dmc_base(image.mem, image.load)
     if base is None:
         raise DmcParseError("image does not carry the DMC player signature")
-    if dmc_variant(image.mem, base) is None:
+    variant = dmc_variant(image.mem, base)
+    if variant is None:
         raise DmcParseError(
             "DMC signature found but the body is a generation pydmcsid does not model"
         )
@@ -929,7 +939,7 @@ def parse(data: bytes) -> Song:
         name = author = ""
         play = (base + constants.STD_PLAY_REL) & 0xFFFF
         init = base
-    return Song(
+    song = Song(
         mem=image.mem,
         load=image.load,
         base=base,
@@ -942,6 +952,8 @@ def parse(data: bytes) -> Song:
         author=author,
         header=header,
     )
+    song._decoded["variant"] = variant  # pylint: disable=protected-access
+    return song
 
 
 def read(path) -> Song:

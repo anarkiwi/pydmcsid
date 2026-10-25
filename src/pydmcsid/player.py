@@ -92,13 +92,16 @@ class DmcPlayer(MemPlayer):
 
     def __new__(cls, source, subtune: int = 0):
         del subtune
+        song = source if isinstance(source, Song) else parse(bytes(source))
         if cls is DmcPlayer:
-            song = source if isinstance(source, Song) else parse(bytes(source))
             cls = _engine_class(song)
-        return object.__new__(cls)
+        self = object.__new__(cls)
+        self._parsed = song  # parsed once; __init__ reuses it
+        return self
 
     def __init__(self, source, subtune: int = 0):
-        song = source if isinstance(source, Song) else parse(bytes(source))
+        del source
+        song = self._parsed
         base, subtune = wrapper_body(song, subtune)
         if base != (song.base & 0xFFFF):
             song = dataclasses.replace(
