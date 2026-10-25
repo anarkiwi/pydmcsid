@@ -7,7 +7,10 @@ Consumes `.sid` files (PSID/RSID containers) and bare `.prg` images through the
 shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base: the
 resident DMC player plus its per-tune data are loaded as a memory image, the
 per-tune table bases are located from the player-code operands (relocated and
-short-stub-prepended images are found), and container headers are not trusted.
+short-stub-prepended images are found), and container headers are only partly
+trusted: the header init/play vectors are followed to detect play-wrappers
+(`wrapper_body`, the byte-exact gates and the `$937` multispeed handling), but the
+player body is located from the code.
 
 ## Install
 

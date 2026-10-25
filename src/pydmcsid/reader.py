@@ -824,9 +824,10 @@ def dmc_byte_exact(
     """True if the body at ``base`` is a generation pydmcsid plays byte-exact.
 
     True for the init-``$37`` generation, the modelled init-``$1d`` bodies and the
-    reorganised ``$a1`` engine; False for a recognised DMC of an unmodelled
-    generation.  For the init-``$37`` and init-``$1d`` builds, when the play entry
-    is wrapped (``play != base+3``) the wrapper is FOLLOWED
+    reorganised ``$a1``, ``$95`` (n95) and ``$94a`` (nn) engines; False for a
+    recognised DMC of an unmodelled generation.  For the init-``$37`` and
+    init-``$1d`` builds, when the play entry is wrapped (``play != base+3``) the
+    wrapper is FOLLOWED
     (:func:`_play_wrapper_benign`): a benign pass-through (a pure relocator/thunk,
     or a transparent multispeed divider whose every branch re-enters the standard
     play body) is admitted, since the resident body is reproduced byte-exact; a
@@ -887,9 +888,10 @@ class Song:
     def byte_exact(self) -> bool:
         """Whether pydmcsid's player reproduces this body byte-exact.
 
-        True for the init-``$37`` generation and the modelled init-``$1d`` bodies,
-        including builds behind a benign play-wrapper (a thin relocator/thunk or a
-        transparent multispeed divider that follows to the standard play entry);
+        True for the init-``$37`` generation, the modelled init-``$1d`` bodies and
+        the ``$a1``, ``$95`` (n95) and ``$94a`` (nn) engines, including builds
+        behind a benign play-wrapper (a thin relocator/thunk or a transparent
+        multispeed divider that follows to the standard play entry);
         False for an unmodelled generation, a genuine wrapper that alters per-frame
         behaviour, or a ``$1d`` build that relocates the AD/SR helper.  See
         :func:`dmc_byte_exact`.

@@ -2,7 +2,7 @@
 
 The resident player+data image is reproduced byte-for-byte, so a re-parse yields
 the same tune; the round-tripped container also reproduces the original tune
-frame-for-frame on the py65 oracle (the packed form the DMC editor loads).
+frame-for-frame on the jennings oracle (the packed form the DMC editor loads).
 """
 
 import pytest
@@ -36,7 +36,7 @@ def test_to_sid_preserves_metadata_and_image(tune_path):
 
 
 def test_to_sid_roundtrip_frame_exact(tune_path):
-    """The re-wrapped ``.sid`` reproduces the source tune frame-for-frame (py65)."""
+    """The re-wrapped ``.sid`` reproduces the source tune frame-for-frame (jennings)."""
     data = tune_path.read_bytes()
     song = pydmcsid.parse(data)
     rewrapped = pydmcsid.to_sid(song)
