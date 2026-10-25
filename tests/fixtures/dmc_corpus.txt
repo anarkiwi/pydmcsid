@@ -1,11 +1,11 @@
-# Representative sample of HVSC DMC (Demo Music Creator) tunes carrying the
-# canonical DMC player body this reader models: a 4-entry JMP table whose
-# play/stop/FUN targets sit at the fixed $85/$62f/$63e offsets from the table
-# base (init entry varies: $1d or $37).  Paths only (HVSC works are copyright,
-# never committed); the corpus test resolves them under $HVSC and skips cleanly
-# when $HVSC is unset.  Selection is deterministic (see scripts/gen_dmc_corpus.py):
-# it spans both init sub-versions, base-at-load and stub-prepended (base != load)
-# layouts, and a range of load addresses and HVSC collections.
+# Representative sample of HVSC DMC (Demo Music Creator) tunes pydmcsid
+# recognises: every body generation (v37/v1d/a1/n95/nn), byte-exact or not, in
+# both base-at-load and stub-prepended (base != load) layouts.  Paths only (HVSC
+# works are copyright, never committed); the corpus test fetches each tune via
+# pysidtracker's `hvsc` fixture ($HVSC tree, else the shared cache, else the HVSC
+# mirror) and fails if one is unreachable.  Regenerate the per-class sample with
+#   pysidtracker variant census --hvsc $HVSC --sample N <candidates.csv>
+# (the pysidtracker variant census over pydmcsid's registered `dmc` format).
 DEMOS/0-9/2Pac_Intro.sid
 DEMOS/A-F/Alcohol_Rulz.sid
 DEMOS/A-F/Axel_F_Remix.sid
