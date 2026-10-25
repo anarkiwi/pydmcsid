@@ -1,6 +1,6 @@
 """Player-constant values for the DMC (Demo Music Creator) player.
 
-These are the FIXED code OFFSETS-from-load of each per-tune table base operand
+These are the FIXED code OFFSETS-from-base of each per-tune table base operand
 in the DMC player binary (the 16-bit operand of the ``LDA <table>,Y`` that reads
 the table).  The player binary is identical across tunes, so the offsets are
 constant; the VALUE stored at each offset is the per-tune table base (a tune with
@@ -12,34 +12,13 @@ operands, not hardcoded).  Transcribed from the DMC disassembly
 # Hardware constants live in pysidtracker; re-export them for back-compat so
 # existing ``pydmcsid.constants.<NAME>`` callers keep working.
 from pysidtracker.registers import (  # pylint: disable=unused-import
-    NTSC_CLOCK_HZ,
-    NTSC_CYCLES_PER_FRAME,
-    PAL_CLOCK_HZ,
     PAL_CYCLES_PER_FRAME,
-    PW_HI_REGS,
     SID_BASE,
     SID_REG_COUNT,
-    SID_VOICE_OFFSET,
 )
 
 # Back-compat alias: the DMC reader/tests call the 25-register file ``SID_REGISTERS``.
 SID_REGISTERS = SID_REG_COUNT
-
-# DMC JMP-table signature at load ($1000): JMP init / play / stop / FUN_163E.
-# The canonical exact 12 bytes for the $1000 / init-$1037 build.  Recognition is
-# NOT done against these literal bytes: the player is relocatable (the JMP targets
-# are absolute, so they track the load/base address) and the init entry varies
-# across DMC sub-versions.  See ``DMC_JMP_*_REL`` for the load-independent anchor.
-DMC_SIGNATURE = bytes.fromhex("4c37104c85104c2f164c3e16")
-
-# The DMC resident player opens with a 4-entry JMP table (JMP init / play / stop /
-# FUN).  The play/stop/FUN targets sit at these FIXED offsets from the table base
-# regardless of load address -- they identify the exact player body this reader
-# models.  The init target is NOT part of the anchor: it varies across DMC
-# sub-versions (commonly $101d or $1037) without changing the body layout.
-DMC_JMP_PLAY_REL = 0x85
-DMC_JMP_STOP_REL = 0x62F
-DMC_JMP_FUN_REL = 0x63E
 
 # The JMP table is normally AT the load address, but some tunes carry a short
 # relocator stub (commonly 7 bytes) ahead of the resident player.  Scan this many
@@ -92,7 +71,6 @@ VIB_SEED_OP = 0x2F2  # LDA <vibscale>,Y @ $12F1 (init-$1d vib-delta seed, note-i
 # $11A6; the block is contiguous (inst=note+3, filt=note+6, toggle=+7, bend=+8).
 NOTE_CELL_OP = 0x1A7  # STA <note>,X @ $11A6
 INST_CELL_OP = 0x11A  # STA <inst>,X @ $1119 (== note+3 in the modelled layout)
-FILT_CELL_OP = 0xA7  # LDA <filt> @ $10A6 (== note+6 in the modelled layout)
 
 # init-$1d rest/tie/legato tail: the JMP at $1180 (target of the shared $117D
 # handler) sends a rest/tie/legato row to either the full steady tick ($1322) or
@@ -124,8 +102,6 @@ V1D_ONSET_ADSR_IMM = 0x0F  # the helper's AD/SR immediate
 # Detected + replayed so the tail $D418 is emitted each frame (see
 # ``reader.tail_d418_force``).
 TAIL_STORE_REL = 0xAC  # play-body tail: stock STA $D417 ($8D) / patched JSR ($20)
-TAIL_STORE_OP = 0x8D  # stock STA $D417
-BASE_D418_REL = 0x717  # base mode/vol cell ($1717), OR'd into the forced $D418
 
 # Byte-exactness gates for the init-$1d body: a few hand-customized $1d builds
 # share the marker+layout but wrap the play entry (a relocator/extra-code stub)
@@ -145,7 +121,6 @@ V37_RELEASE_SITE_REL = 0x33D
 # shift is read from the code (count of ``LSR A`` before the store site opcode).
 PW_MIN_SHIFT_REL = 0x24B  # first ``LSR A`` of the pw_min shift chain
 PW_MIN_STORE_OP = 0x9D  # STA $1756,X -- terminates the shift chain
-PW_MIN_SHIFT_STD = 4  # stock shift (four ``LSR A``)
 
 # --- $a1 engine (V5-era reorganised player body) ---------------------------
 # A genuinely different DMC generation: the play body sits at ``base+$a1`` (the

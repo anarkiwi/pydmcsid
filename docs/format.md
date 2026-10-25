@@ -93,7 +93,9 @@ shared `py*` register-log convention, via
 `song.byte_exact()` reports whether the recognised body is one the transcription
 reproduces byte-for-byte: the init-`$37` and the modelled init-`$1d` generations
 (both release variants) and the reorganised `$a1`/`$95`/`$94a` engines, gated out
-only for a build whose play entry is wrapped, whose AD/SR helper is relocated,
+only for a build whose play entry is wrapped by something other than a benign
+pass-through (a thunk or transparent multispeed divider that re-enters the
+standard play body is followed), whose AD/SR helper is relocated,
 whose release is patched to an unrecognised routine, or (for the reorganised
 engines) whose header vectors resolve outside the resident player (a
 subtune-selector / multispeed wrapper). `tests/test_corpus.py` validates a
@@ -125,7 +127,7 @@ signature raises `DmcParseError` (a `pysidtracker.SidParseError`), which the
 survey records as `not_decompiled`.
 
 ```bash
-pip install "pysidtracker[survey]>=0.30.0"
+pip install "pysidtracker[survey]>=0.35.0"
 python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
@@ -146,7 +148,7 @@ oracle. `.hvsc-survey/` holds copyright-derived traces and is gitignored.
 back to the packed player+data image the DMC editor loads (`to_prg` a bare `.prg`
 = load address + resident image; `to_sid` a PSID/RSID container). The resident
 image is reproduced byte-for-byte, so `parse(to_prg(song))` yields the same tune
-and a re-wrapped `.sid` reproduces it frame-for-frame on the py65 oracle.
+and a re-wrapped `.sid` reproduces it frame-for-frame on the jennings oracle.
 
 ## References
 

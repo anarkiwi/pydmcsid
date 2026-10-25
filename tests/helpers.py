@@ -2,11 +2,9 @@
 
 DMC ``.sid`` tunes are HVSC copyright works, never committed; each id maps to its
 HVSC relative path (fetched + cached on demand).  The tunes span every DMC body
-generation pydmcsid plays byte-exact -- init-``$37`` (:class:`~pydmcsid.Player`),
-init-``$1d`` (:class:`~pydmcsid.PlayerV1D`), the ``$a1`` engine
-(:class:`~pydmcsid.PlayerA1`), the ``$95`` engine (:class:`~pydmcsid.Player95`),
-the ``$94a`` family (:class:`~pydmcsid.PlayerNN`) and its ``$937`` multispeed
-wrapper (:class:`~pydmcsid.Player937`) -- plus the scene-patched builds each
+generation :class:`~pydmcsid.DmcPlayer` plays byte-exact -- init-``$37``,
+init-``$1d``, the ``$a1`` engine, the ``$95`` engine, the ``$94a`` family and its
+``$937`` multispeed wrapper -- plus the scene-patched builds each
 variant's code-reading detectors reproduce.  The curated byte-exact-vs-oracle
 subset lives in ``test_oracle_hvsc.py``.
 """

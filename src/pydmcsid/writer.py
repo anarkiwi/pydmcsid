@@ -11,7 +11,7 @@ back into an editor.
 resident image); :func:`to_sid` wraps it in a PSID/RSID container; :func:`write`
 dispatches on the path suffix.  The resident image is reproduced byte-for-byte,
 so ``parse(to_prg(song))`` reproduces the same tune (verified frame-exact against
-the py65 oracle in the tests).
+the jennings oracle in the tests).
 """
 
 from pathlib import Path
