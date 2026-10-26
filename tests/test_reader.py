@@ -195,7 +195,7 @@ def _a1_body(base, sr_clear=0x99, gate=0x9D, order_tbl=0x1900):
     Fills the play body ($a1..$70e) with NOPs plus one per-tune-data operand
     (wildcarded by the signature) and the two patchable release stores, and seeds
     the init order-table copy ``LDA <order>,Y : STA $17cf,X`` store site.  The
-    caller monkeypatches ``constants.A1_BODY_SHA256`` to this body's normalised
+    caller monkeypatches ``reader.A1_BODY``'s signature to this body's normalised
     hash, so the recognition machinery (dispatch scan, $a1 play offset, body
     normalisation + hash, order-table read) is exercised without embedding the
     real engine bytes.
@@ -218,19 +218,25 @@ def _a1_body(base, sr_clear=0x99, gate=0x9D, order_tbl=0x1900):
 def _a1_hash(body):
     import hashlib
 
-    from pydmcsid.reader import _norm_a1_body
+    from pydmcsid.reader import A1_BODY, norm_body
 
     img = bytearray(0x10000)
     img[0x1000 : 0x1000 + len(body)] = body  # body is load-relative to $1000
-    return hashlib.sha256(_norm_a1_body(img, 0x1000)).hexdigest()
+    return hashlib.sha256(norm_body(img, 0x1000, A1_BODY)).hexdigest()
+
+
+def _set_a1_sha(monkeypatch, sha):
+    """Make ``sha`` the ``$a1`` body signature for the test."""
+    from pydmcsid import reader
+
+    monkeypatch.setattr(reader, "A1_BODY", reader.A1_BODY._replace(sha256=sha))
 
 
 def test_a1_body_recognised_byte_exact(monkeypatch):
     """A synthetic $a1 body is recognised as variant "a1" and played byte-exact."""
-    from pydmcsid import constants
 
     body = _a1_body(0x1000)
-    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body))
+    _set_a1_sha(monkeypatch, _a1_hash(body))
     song = pydmcsid.parse(b"\x00\x10" + body)
     assert song.is_dmc()
     assert song.base == 0x1000
@@ -240,18 +246,17 @@ def test_a1_body_recognised_byte_exact(monkeypatch):
 
 def test_a1_release_patch_and_order_gate(monkeypatch):
     """$a1 byte-exactness gates on the release patch opcodes + order-table anchor."""
-    from pydmcsid import constants
-    from pydmcsid.reader import a1_order_table_base, dmc_byte_exact
+    from pydmcsid.reader import order_table_base, dmc_byte_exact
 
     body = _a1_body(0x1000, order_tbl=0x1888)
-    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body))
+    _set_a1_sha(monkeypatch, _a1_hash(body))
     song = pydmcsid.parse(b"\x00\x10" + body)
-    assert a1_order_table_base(song.mem, 0x1000) == 0x1888  # read from store site
+    assert order_table_base(song.mem, 0x1000, "a1") == 0x1888  # read from store site
     assert song.byte_exact()
 
     # An unmodelled opcode at the release SR-clear site is recognised, not exact.
     body2 = _a1_body(0x1000, sr_clear=0xEA)
-    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(body2))
+    _set_a1_sha(monkeypatch, _a1_hash(body2))
     song2 = pydmcsid.parse(b"\x00\x10" + body2)
     assert song2.variant() == "a1"
     assert not song2.byte_exact()
@@ -262,11 +267,10 @@ def test_a1_release_patch_and_order_gate(monkeypatch):
 
 def test_a1_does_not_misfire_on_base_body(monkeypatch):
     """The $a1 detector never claims the $85 (v37/v1d) synthetic bodies."""
-    from pydmcsid import constants
     from pydmcsid.reader import _a1_body_ok
 
     # Even with the $a1 hash active, a $85 body is not an $a1 body.
-    monkeypatch.setattr(constants, "A1_BODY_SHA256", _a1_hash(_a1_body(0x1000)))
+    _set_a1_sha(monkeypatch, _a1_hash(_a1_body(0x1000)))
     v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
     assert v37.variant() == "v37"
     assert not _a1_body_ok(v37.mem, 0x1000)
@@ -281,14 +285,14 @@ def test_a1_norm_body_straddling_instruction_returns_none():
     cleanly rejects the image instead of propagating an ``IndexError`` out of
     ``read``/``parse``.
     """
-    from pydmcsid.reader import _norm_a1_body, find_dmc_base
+    from pydmcsid.reader import A1_BODY, find_dmc_base, norm_body
 
     mem = bytearray(0x10000)
     base = 0x1000
     mem[base : base + 6] = _asm("JMP $1040\nJMP $10A1")  # play->$a1
     for off in range(base + 0xA1, base + 0x70F):  # JMP-abs (3-byte) fill: straddles
         mem[off] = 0x4C
-    assert _norm_a1_body(mem, base) is None  # no IndexError
+    assert norm_body(mem, base, A1_BODY) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
         pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
@@ -300,7 +304,7 @@ def _n95_body(base, order_tbl=0x1900, reload_seed=0x07):
     NOP-fills the play body ($95..$718) with one per-tune-data operand (wildcarded
     by the signature) and the self-modified tempo-reload seed at $10bf, and seeds
     the init order-table copy ``LDA <order>,Y : STA $17d9,X`` store site.  The
-    caller monkeypatches ``constants.N95_BODY_SHA256`` to this body's normalised
+    caller monkeypatches ``reader.N95_BODY``'s signature to this body's normalised
     hash, exercising the recognition machinery without embedding the real engine.
     """
     from pydmcsid import constants
@@ -320,19 +324,25 @@ def _n95_body(base, order_tbl=0x1900, reload_seed=0x07):
 def _n95_hash(body):
     import hashlib
 
-    from pydmcsid.reader import _norm_n95_body
+    from pydmcsid.reader import N95_BODY, norm_body
 
     img = bytearray(0x10000)
     img[0x1000 : 0x1000 + len(body)] = body  # body is load-relative to $1000
-    return hashlib.sha256(_norm_n95_body(img, 0x1000)).hexdigest()
+    return hashlib.sha256(norm_body(img, 0x1000, N95_BODY)).hexdigest()
+
+
+def _set_n95_sha(monkeypatch, sha):
+    """Make ``sha`` the ``$n95`` body signature for the test."""
+    from pydmcsid import reader
+
+    monkeypatch.setattr(reader, "N95_BODY", reader.N95_BODY._replace(sha256=sha))
 
 
 def test_n95_body_recognised_byte_exact(monkeypatch):
     """A synthetic $95 body is recognised as variant "n95" and played byte-exact."""
-    from pydmcsid import constants
 
     body = _n95_body(0x1000)
-    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body))
+    _set_n95_sha(monkeypatch, _n95_hash(body))
     song = pydmcsid.parse(b"\x00\x10" + body)
     assert song.is_dmc()
     assert song.base == 0x1000
@@ -346,17 +356,16 @@ def test_n95_reload_seed_wildcarded(monkeypatch):
     Two builds differing only in that seed byte share the normalised signature, so
     a single hash recognises both -- mirroring the real 415/88 sub-clusters.
     """
-    from pydmcsid import constants
-    from pydmcsid.reader import n95_order_table_base
+    from pydmcsid.reader import order_table_base
 
     body1 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x01)
-    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body1))
+    _set_n95_sha(monkeypatch, _n95_hash(body1))
     song1 = pydmcsid.parse(b"\x00\x10" + body1)
-    assert n95_order_table_base(song1.mem, 0x1000) == 0x1888  # read from store site
+    assert order_table_base(song1.mem, 0x1000, "n95") == 0x1888  # read from store site
     assert song1.variant() == "n95"
     # A different reload seed normalises to the SAME body hash.
     body2 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x00)
-    assert _n95_hash(body2) == constants.N95_BODY_SHA256
+    assert _n95_hash(body2) == _n95_hash(body1)
     song2 = pydmcsid.parse(b"\x00\x10" + body2)
     assert song2.variant() == "n95"
     assert song2.byte_exact()
@@ -364,11 +373,10 @@ def test_n95_reload_seed_wildcarded(monkeypatch):
 
 def test_n95_wrapped_vectors_not_byte_exact(monkeypatch):
     """A $95 build whose header play/init resolve outside the player is gated out."""
-    from pydmcsid import constants
     from pydmcsid.reader import dmc_byte_exact
 
     body = _n95_body(0x1000)
-    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(body))
+    _set_n95_sha(monkeypatch, _n95_hash(body))
     mem = bytearray(0x10000)
     mem[0x1000 : 0x1000 + len(body)] = body
     assert dmc_byte_exact(mem, 0x1000, play=0x1003, init=0x1000)  # unwrapped
@@ -377,10 +385,9 @@ def test_n95_wrapped_vectors_not_byte_exact(monkeypatch):
 
 def test_n95_does_not_misfire_on_base_body(monkeypatch):
     """The $95 detector never claims the $85 (v37/v1d) synthetic bodies."""
-    from pydmcsid import constants
     from pydmcsid.reader import _n95_body_ok
 
-    monkeypatch.setattr(constants, "N95_BODY_SHA256", _n95_hash(_n95_body(0x1000)))
+    _set_n95_sha(monkeypatch, _n95_hash(_n95_body(0x1000)))
     v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
     assert v37.variant() == "v37"
     assert not _n95_body_ok(v37.mem, 0x1000)
@@ -388,7 +395,7 @@ def test_n95_does_not_misfire_on_base_body(monkeypatch):
 
 def test_n95_norm_body_straddling_instruction_returns_none():
     """A $95 body whose opcode walk straddles the body end is rejected, not crashed."""
-    from pydmcsid.reader import _norm_n95_body, find_dmc_base
+    from pydmcsid.reader import N95_BODY, find_dmc_base, norm_body
 
     mem = bytearray(0x10000)
     base = 0x1000
@@ -396,7 +403,7 @@ def test_n95_norm_body_straddling_instruction_returns_none():
     mem[base + 0x95] = 0xEA  # a 1-byte NOP shifts the JMP-abs run off alignment
     for off in range(base + 0x96, base + 0x719):  # JMP-abs (3-byte) fill: straddles
         mem[off] = 0x4C
-    assert _norm_n95_body(mem, base) is None  # no IndexError
+    assert norm_body(mem, base, N95_BODY) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
         pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))

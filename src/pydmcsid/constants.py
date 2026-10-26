@@ -55,6 +55,7 @@ FREQ_HI_OP = 0x1B1  # LDA $16A7,Y @ $11B0  (note->freq hi)
 INSTR_OP = 0x227  # LDA $17B0,Y @ $1226  (stride-11 instrument records)
 PATTERN_LO_OP = 0x103  # LDA $1829,Y @ $1102  (pattern ptr lo)
 PATTERN_HI_OP = 0x108  # LDA $182D,Y @ $1107  (pattern ptr hi)
+ORDER_STORE_REL = 0x707  # init copies each orderlist ptr to base+$707,X
 ORDER_TABLE_OP = 0x3E  # LDA $17F0,Y @ $103D  (per-voice orderlist base table)
 ORDER_TABLE_OP_V1D = 0x51  # LDA <ordertable>,Y @ $1050 (init-$1d relocated the read)
 ORDER_LOOP_HANDLER_REL = (
@@ -92,6 +93,7 @@ BURST_IMM_REL = 0x30B
 # code so both encodings are modelled (like ``pw_min_shift``/``release_...``).
 V1D_ONSET_CALL_REL = 0x1DB  # JSR/BIT onset-helper call site
 V1D_ONSET_CTRL_REL = 0x1D9  # LDA #imm feeding the helper's CTRL store ($08)
+V37_ONSET_CTRL = 0x08  # stock note-fetch CTRL immediate (the TEST bit)
 V1D_ONSET_BIT_OP = 0x2C  # BIT abs -- onset-helper call no-op'd (no SID write)
 V1D_ONSET_ADSR_IMM = 0x0F  # the helper's AD/SR immediate
 
@@ -181,7 +183,10 @@ STD_PLAY_REL = 0x03  # the standard DMC play entry ($1003 = base+3, unwrapped)
 # from the base regardless of the header vector), so following the wrapper admits
 # them.  Bounds on the static follow (crash-safe; every read is guarded):
 WRAP_FOLLOW_BUDGET = 256  # max instructions decoded across all explored paths
-WRAP_INIT_BUDGET = 64  # max instructions decoded simulating init's self-patches
+WRAP_INIT_CYCLES = 200_000  # cycle cap on the emulated init that patches a wrapper
+WRAP_BODY_SPAN = (
+    0x900  # resident body span: init stores from here are not the wrapper's
+)
 INST_ADSR_SUB_OP = 0x231  # JSR <adsr-helper> operand @ $1230
 INST_ADSR_SUB_REL = 0x84B  # the modelled AD/SR write helper ($184B)
 PW_TABLE_OP = 0x358  # LDA $17B3,Y @ $1357  (PW-sweep nibble table)
