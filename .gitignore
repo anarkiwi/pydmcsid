@@ -231,3 +231,7 @@ core.[0-9]*
 
 # pysidtracker.survey work dir: copyright-derived traces (never committed)
 .hvsc-survey/
+
+# Local agent worktrees and regression dumps
+.claude/
+.regress/

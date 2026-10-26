@@ -70,7 +70,7 @@ sweep, the hard-restart window, and the final per-voice frequency compose.
 The note-release gate-off ($133d) either leaves AD/SR static (the `$37` stock
 inline `STA $100f,X`) or clears AD/SR=0 as an envelope-clearing hard-restart (the
 `$1d` `$17ec` helper, or a scene-modified `$37` build patched to `JSR` a clearing
-routine). Both generations ship both variants, so `release_clears_adsr` reads the
+routine). Both generations ship both variants, so the `release` facet reads the
 behaviour from the actual release code (an inline store, or a `JSR` helper
 followed to its first `RTS`) rather than assuming it per generation.
 
@@ -115,19 +115,14 @@ single-speed render, so it is excluded from the byte-exact oracle set.
 [`scripts/oracle_hvsc.py`](../scripts/oracle_hvsc.py) plugs `DmcPlayer` into the
 [`pysidtracker.survey`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/survey.md)
 whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
-of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` reports the decoded
-build: `engine` (the `DmcPlayer` class), `variant`, the library's own
-`byte_exact` claim, `wrapped` (play vector off the standard entry), `stub`
-(player base above the load address), `pysidtracker.cadence.cadence_info`'s
-`rsid`, play `trigger`, `speed` (calls per PAL frame) and `dynamic`, and the
-code-read build options `release_clears_adsr`,
-`release_clears_sr`, `pw_min_shift`, `tail_d418`, `onset_ctrl`, `onset_adsr`
-(`null` where the engine has no such option). A tune without the DMC player
-signature raises `DmcParseError` (a `pysidtracker.SidParseError`), which the
-survey records as `not_decompiled`.
+of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` is `engine` (the
+`DmcPlayer` class), the song's build variant (`Variant.as_info()`, below) and
+`pysidtracker.cadence.cadence_info`'s `rsid`, play `trigger`, `speed` and
+`dynamic`. A tune without the DMC player signature raises `DmcParseError` (a
+`pysidtracker.SidParseError`), which the survey records as `not_decompiled`.
 
 ```bash
-pip install "pysidtracker[survey]>=0.35.0"
+pip install "pysidtracker[survey]>=0.38.0"
 python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
@@ -141,6 +136,26 @@ python -m pysidtracker.survey file scripts/oracle_hvsc.py $HVSC/DEMOS/A-F/FST.si
 
 `survey file` compares one tune's subtunes (`--song N|N-M|list|all`) with the
 oracle. `.hvsc-survey/` holds copyright-derived traces and is gitignored.
+
+## Build variant
+
+`song.facets()` is the tune's `pysidtracker.facets.Variant` over the
+`pydmcsid.variant.FACETS` registry: every value the players and the byte-exact
+gate read from the tune's own code, each with its source (`detected@$addr` where
+its code site matched, `default` where the player falls back, or `inferred`):
+
+| Kind | Facets |
+|---|---|
+| build | `generation` (`v37`/`v1d`/`a1`/`n95`/`nn`) |
+| layout | `layout` (the `locate()` strategy: `dispatch` or `nn-dispatch`), `stub` (dispatch above the load address), `play_rel`, `nn_shift` (the `$94a` virtual base), `note_cells` (the `$1d` work-cell block), `rest_tail`, `order_table` (init store site, else the fixed operand as `default`) |
+| release | `byte_exact`, `release`, `pw_min_shift`, `order_loop`, `tail_d418`, `onset_ctrl`, `onset`, `burst_imm`, `release_sr`, `release_gate` |
+| init | `wrapper` (`none`/`benign`/`selector`/`multispeed`/`foreign`), `ms_reload`, `ms_seed` |
+
+The registered `dmc` pysidtracker format exposes it as `variant` (so
+`pysidtracker variant census` classes tunes by it) and `facet_sites` (the
+`{addr: facet}` labels whydiff / pathdiff put on 6502 edges).
+`scripts/dmc_regress.py` dumps every DMC tune's decode and grid digests under an
+HVSC tree and diffs two dumps, to show a refactor is behaviour-neutral.
 
 ## Export
 

@@ -1,38 +1,17 @@
 """pysidtracker format registration: lets the shared tooling census DMC tunes.
 
 Registered on the ``pysidtracker.formats`` entry point, so ``pysidtracker variant
-census`` (and the survey renderer) classify DMC tunes by body generation, byte-exact
-modelling and layout without a pydmcsid-specific sampler.
+census`` and the survey renderer classify DMC tunes by their :mod:`pydmcsid.variant`
+facets without a pydmcsid-specific sampler.
 """
 
 from __future__ import annotations
 
-from pysidtracker import Facet, FacetRegistry, Finding, SidFormat
-from pysidtracker.facets import inferred
+from pysidtracker import SidFormat
 
 from pydmcsid.player import DmcPlayer
 from pydmcsid.reader import DmcSidParser, Song
-
-
-def _generation(song: Song):
-    return Finding(song.variant(), inferred("dmc_variant"))
-
-
-def _byte_exact(song: Song):
-    return Finding(song.byte_exact(), inferred("dmc_byte_exact"))
-
-
-def _layout(song: Song):
-    return Finding("stub" if song.base != song.load else "load", inferred("base-load"))
-
-
-FACETS = FacetRegistry(
-    [
-        Facet("generation", "build", detector=_generation),
-        Facet("byte_exact", "release", detector=_byte_exact),
-        Facet("layout", "layout", detector=_layout),
-    ]
-)
+from pydmcsid.variant import facet_sites
 
 
 def _metadata(song: Song):
@@ -47,5 +26,6 @@ def dmc_format() -> SidFormat:
         parser=DmcSidParser(),
         player=DmcPlayer,
         metadata=_metadata,
-        variant=FACETS.detect,
+        variant=Song.facets,
+        facet_sites=facet_sites,
     )

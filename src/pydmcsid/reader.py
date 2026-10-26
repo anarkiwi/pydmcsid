@@ -8,15 +8,33 @@ memory image and its load address; the player walks the resident tables directly
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
-from pysidtracker import BaseSidParser, CodePattern, SidError, SidImage, find_code_all
+from pysidtracker import (
+    BaseSidParser,
+    CodePattern,
+    Located,
+    SidError,
+    SidImage,
+    SitePattern,
+    Strategy,
+    find_code_all,
+    init_effects,
+    locate,
+)
+from pysidtracker.facets import Finding, detected
+from pysidtracker.header import SidHeader
+from pysidtracker.locate import STATIC
 from pysidtracker.mos6502 import (
     ABS_STORE_OPS,
     BRANCH_OPS,
     INERT_OPS,
+    OP_JMP,
+    OP_JSR,
     OP_LEN,
+    RETURN_OPS,
     ZP_STORE_OPS,
+    s8,
     walk_until,
 )
 from pysidtracker.registers import SID_BASE, SID_REG_COUNT
@@ -24,11 +42,46 @@ from pysidtracker.registers import SID_BASE, SID_REG_COUNT
 from pydmcsid import constants
 from pydmcsid.errors import DmcParseError
 
-# The DMC dispatch opening: an init ``JMP`` then the play ``JMP`` (whose target
-# is captured as ``play``).  The 2-JMP opcode gate is a masked code-fragment
-# match (pysidtracker ``codescan``); the base-relative offset check on the
-# captured play target stays caller-side in :func:`find_dmc_base`.
+# The DMC dispatch: an init ``JMP`` then the play ``JMP`` (target captured as ``play``).
 _DMC_DISPATCH = CodePattern("4C {init:w} 4C {play:w}")
+# The init copy of a per-subtune order-list pointer into a per-voice work cell.
+_ORDER_COPY = CodePattern("B9 {table:w} 9D {store:w}")
+# The note-release gate-off: the stock inline store, or a call to a helper.
+_RELEASE_SITE = SitePattern("( inline: 9D | call: 20 {helper:w} )")
+# The init-$37 note-fetch TEST-bit write: ``LDA #ctrl : STA $D404,Y``.
+_ONSET_CTRL_SITE = CodePattern("A9 {ctrl} 99")
+# The patched tail helper: ``STA $D417 : LDA #imm : ORA <d418> : STA $D418``.
+_TAIL_D418_HELPER = CodePattern("8D 17 D4 A9 {imm} 0D ?? ?? 8D 18 D4")
+# The ``$937`` secondary dispatch ``LDA flag : BEQ : JSR refresh``.
+_NN937_DISPATCH = CodePattern("AD ?? ?? F0 ?? 20 {steady:w}")
+# The ``$937`` refresh body opening ``LDY phase : LDA mask,Y``.
+_NN937_REFRESH = CodePattern("AC ?? ?? B9")
+# The ``$937`` divider seed/reload ``LDX #imm : STX counter``.
+_NN937_DIVIDER = CodePattern("A2 {imm} 8E {counter:w}")
+# The ``$a1`` per-build patchable release stores: the stock store or a ``BIT`` no-op.
+_A1_SR_SITE = SitePattern("( clear: 99 | nop: 2C )")
+_A1_GATE_SITE = SitePattern("( mask: 9D | nop: 2C )")
+# Opcodes that end a benign-wrapper path: a call or any return.
+_WRAP_STOP = RETURN_OPS | {OP_JSR}
+_SITE_SPAN = 16  # bytes a variable-length site pattern may span
+
+
+def _site(pattern, mem, addr: int):
+    """The match of ``pattern`` starting exactly at ``addr``, or ``None``."""
+    if isinstance(pattern, SitePattern):
+        hit = pattern.find_first(mem, start=addr, end=addr + _SITE_SPAN)
+    else:
+        hits = find_code_all(mem, pattern, start=addr, end=addr + pattern.length)
+        hit = hits[0] if hits else None
+    return hit if hit is not None and hit.addr == addr else None
+
+
+class Dispatch(NamedTuple):
+    """A located DMC dispatch: the JMP table, its play target and the engine base."""
+
+    table: int
+    play: int
+    base: int
 
 
 def _play_body_ok(mem, play: int, base: int) -> bool:
@@ -67,21 +120,44 @@ def find_dmc_base(mem, load: int) -> Optional[int]:
     reorganised player bodies (different tempo work cell / work-RAM layout) that
     only share the DMC data-table structure.  Returns the base.
     """
+    located = locate_dmc(mem, load)
+    return located.layout.base if located.ok else None
+
+
+def _dispatches(image: SidImage):
+    end = min(image.load + constants.DMC_TABLE_SCAN, len(image.mem))
+    return find_code_all(image, _DMC_DISPATCH, start=image.load, end=end)
+
+
+def _direct_dispatch(image: SidImage, match) -> Dispatch:
+    mem, table, play = image.mem, match.addr, match.captures["play"]
+    if not (
+        _play_body_ok(mem, play, table)
+        or _play_body_a1_ok(mem, play, table)
+        or _play_body_95_ok(mem, play, table)
+    ):
+        raise DmcParseError(f"play ${play:04x} is not a modelled DMC body")
+    return Dispatch(table, play, table)
+
+
+def _nn_dispatch(image: SidImage, match) -> Dispatch:
+    table, play = match.addr, match.captures["play"]
+    base = _nn_engine_base(image.mem, play, table)
+    if base is None:
+        raise DmcParseError(f"play ${play:04x} is not a $94a second-level dispatch")
+    return Dispatch(table, play, base)
+
+
+LAYOUTS = (
+    Strategy("dispatch", STATIC, _direct_dispatch, _dispatches),
+    Strategy("nn-dispatch", STATIC, _nn_dispatch, _dispatches),
+)
+
+
+def locate_dmc(mem, load: int) -> Located:
+    """:func:`~pysidtracker.locate` the DMC :class:`Dispatch` in the image at ``load``."""
     image = SidImage(mem, load, min(len(mem), 0x10000), None, b"", b"")
-    end = min(load + constants.DMC_TABLE_SCAN, len(mem))
-    for match in find_code_all(image, _DMC_DISPATCH, start=load, end=end):
-        base = match.addr
-        play = match.captures["play"]
-        if (
-            _play_body_ok(image.mem, play, base)
-            or _play_body_a1_ok(image.mem, play, base)
-            or _play_body_95_ok(image.mem, play, base)
-        ):
-            return base
-        nn_base = _nn_engine_base(image.mem, play, base)
-        if nn_base is not None:
-            return nn_base
-    return None
+    return locate(image, LAYOUTS, init=False)
 
 
 def _nn_engine_base(mem, play: int, base: int) -> Optional[int]:
@@ -160,77 +236,103 @@ def _play_body_95_ok(mem, play: int, base: int) -> bool:
     return _n95_body_ok(mem, base)
 
 
-def _norm_n95_body(mem, base: int) -> Optional[bytes]:
-    """The ``$95`` play body ($95..$718) with per-tune bytes zeroed, or ``None``.
+class _Body(NamedTuple):
+    """A reorganised engine body's signature: the SHA-256 of its normalised bytes.
 
-    Zeroes the operand of every 3-byte instruction whose target lies in the
-    per-tune data region (``>= base+$858``, past the fixed note-freq tables and
-    work RAM) plus the self-modified tempo-reload seed at ``$10bf`` (init
-    overwrites it from the subtune record, so its source value never matters),
-    leaving only the load-invariant engine opcodes.  Walking with :data:`OP_LEN`
-    keeps the operand positions aligned; a non-family body normalises differently
-    and fails the hash.
+    ``lo``..``hi`` is the body; operands at or past ``data_rel`` (per-tune data) and
+    the ``wild`` offsets (per-build patched bytes) are zeroed before hashing.
     """
-    hi = base + constants.N95_BODY_HI
-    if hi > len(mem):
+
+    lo: int
+    hi: int
+    data_rel: int
+    wild: Tuple[int, ...]
+    sha256: str
+
+
+A1_BODY = _Body(
+    constants.A1_BODY_LO,
+    constants.A1_BODY_HI,
+    constants.A1_DATA_REL,
+    (constants.A1_REL_SR_CLEAR_REL, constants.A1_REL_GATE_REL),
+    constants.A1_BODY_SHA256,
+)
+N95_BODY = _Body(
+    constants.N95_BODY_LO,
+    constants.N95_BODY_HI,
+    constants.N95_DATA_REL,
+    (constants.N95_RELOAD_SEED_REL,),
+    constants.N95_BODY_SHA256,
+)
+
+
+def norm_body(mem, base: int, body: _Body) -> Optional[bytes]:
+    """``body`` at ``base`` with its per-tune bytes zeroed, or ``None``.
+
+    Walks with :data:`OP_LEN` so operand positions stay aligned; a walk that
+    straddles the body end has desynced from the family layout.
+    """
+    if base + body.hi > len(mem):
         return None
-    out = bytearray(mem[base + constants.N95_BODY_LO : hi])
-    pc = constants.N95_BODY_LO
-    while pc < constants.N95_BODY_HI:
-        op = mem[base + pc]
-        length = OP_LEN[op]
-        if pc + length > constants.N95_BODY_HI:  # instr straddles the body end:
-            return None  # walk desynced from the canonical layout -- not a match
+    out = bytearray(mem[base + body.lo : base + body.hi])
+    pc = body.lo
+    while pc < body.hi:
+        length = OP_LEN[mem[base + pc]]
+        if pc + length > body.hi:
+            return None
         if length == 3:
             operand = mem[base + pc + 1] | (mem[base + pc + 2] << 8)
-            if ((operand - base) & 0xFFFF) >= constants.N95_DATA_REL:
-                out[pc - constants.N95_BODY_LO + 1] = 0
-                out[pc - constants.N95_BODY_LO + 2] = 0
+            if ((operand - base) & 0xFFFF) >= body.data_rel:
+                out[pc - body.lo + 1 : pc - body.lo + 3] = b"\0\0"
         pc += length
-    out[constants.N95_RELOAD_SEED_REL - constants.N95_BODY_LO] = 0
+    for off in body.wild:
+        out[off - body.lo] = 0
     return bytes(out)
 
 
+def body_ok(mem, base: int, body: _Body) -> bool:
+    """True if ``base`` carries ``body`` (its normalised bytes hash to the signature)."""
+    norm = norm_body(mem, base, body)
+    return norm is not None and hashlib.sha256(norm).hexdigest() == body.sha256
+
+
+def _a1_body_ok(mem, base: int) -> bool:
+    return body_ok(mem, base, A1_BODY)
+
+
 def _n95_body_ok(mem, base: int) -> bool:
-    """True if ``base+$95`` carries the modelled ``$95`` engine body signature."""
-    body = _norm_n95_body(mem, base)
-    if body is None:
-        return False
-    return hashlib.sha256(body).hexdigest() == constants.N95_BODY_SHA256
+    return body_ok(mem, base, N95_BODY)
 
 
-def n95_order_table_base(mem, base: int) -> Optional[int]:
-    """Return the ``$95`` per-subtune orderlist pointer-table base, or ``None``.
-
-    Read from the init copy ``LDA <ordertable>,Y : STA $17d9,X`` (the store
-    ``9D`` to ``base+$17d9``, low byte of the per-voice orderlist-ptr array),
-    which locates it whatever the init layout."""
-    store_addr = (base + constants.N95_ORDER_STORE_REL - 0x1000) & 0xFFFF
-    sig = bytes((0x9D, store_addr & 0xFF, store_addr >> 8))
-    idx = mem.find(sig, base, min(len(mem), base + 0x2000))
-    if idx >= 3 and mem[idx - 3] == 0xB9:
-        return mem[idx - 2] | (mem[idx - 1] << 8)
-    return None
+# Per generation: ``(order-list pointer work cell, span past base holding the copy)``.
+ORDER_STORES = {
+    "a1": (constants.A1_ORDER_STORE_REL - 0x1000, 0x2000),
+    "n95": (constants.N95_ORDER_STORE_REL - 0x1000, 0x2000),
+}
+_ORDER_STORE = (constants.ORDER_STORE_REL, 0x900)
 
 
-def order_table_base(mem, base: int) -> Optional[int]:
-    """Return the per-subtune order-list pointer-table base, or ``None``.
+def order_table_site(mem, base: int, variant: Optional[str] = None):
+    """The init's ``LDA <ordertable>,Y : STA <cell>,X`` copy match, or ``None``.
 
-    The init routine copies each voice's order-list pointer from the per-subtune
-    table into the fixed shared work cell ``base+$707`` -- the
-    ``LDA <ordertable>,Y : STA base+$707,X`` pair (``B9 lo hi : 9D lo hi``).
-    Reading the table base from that store site (instead of a fixed code offset)
-    locates it whatever the init/id-string layout, so the relocated-play-entry
-    builds resolve it too.  ``base+$707`` is in the engine's shared work RAM, so
-    the store target tracks the base.  The returned operand is an absolute
-    (already load-relinked) address, used as-is.
+    ``<cell>`` is the generation's per-voice order-list pointer work cell (see
+    :data:`ORDER_STORES`), so the copy is found whatever the init layout.
     """
-    store = (base + 0x707) & 0xFFFF
-    sig = bytes((0x9D, store & 0xFF, store >> 8))
-    idx = mem.find(sig, base, min(len(mem), base + 0x900))
-    if idx >= 3 and mem[idx - 3] == 0xB9:  # LDA abs,Y immediately before the store
-        return mem[idx - 2] | (mem[idx - 1] << 8)
+    rel, span = ORDER_STORES.get(variant, _ORDER_STORE)
+    store = (base + rel) & 0xFFFF
+    for hit in find_code_all(mem, _ORDER_COPY, start=base - 3, end=base + span):
+        if hit.captures["store"] == store:
+            return hit
     return None
+
+
+def order_table_base(mem, base: int, variant: Optional[str] = None) -> Optional[int]:
+    """The per-subtune order-list pointer-table base read from the init copy, or ``None``.
+
+    The returned operand is an absolute (already load-relinked) address.
+    """
+    hit = order_table_site(mem, base, variant)
+    return None if hit is None else hit.captures["table"]
 
 
 def dmc_variant(mem, base: int) -> Optional[str]:
@@ -298,12 +400,6 @@ def _v1d_layout_ok(mem, base: int) -> bool:
     )
 
 
-# 6502 instruction lengths and the wrapper-opcode classes come from the shared
-# ``pysidtracker.mos6502`` surface (byte-identical to the tables this reader used
-# to carry): ``OP_LEN`` keeps the linear walks aligned; ``BRANCH_OPS`` /
-# ``INERT_OPS`` / ``ABS_STORE_OPS`` / ``ZP_STORE_OPS`` classify a benign wrapper's
-# opcodes (a store to its OWN counter cell is allowed; a SID write or a followed
-# JMP's operand bytes are not).
 _RTS_STOP = frozenset((0x60,))  # RTS -- terminates a linear helper walk
 
 
@@ -315,106 +411,27 @@ def _wrap_read(mem, overlay: dict, addr: int) -> Optional[int]:
     return mem[addr] if addr < len(mem) else None
 
 
-def _sim_init_patches(mem, base: int, init: Optional[int], subtune: int) -> dict:
-    """Bytes the init routine writes into the wrapper before playback begins.
+def init_writes(mem, init: Optional[int], subtune: int) -> Dict[int, Any]:
+    """The final store init (run with ``A = subtune``) makes to each RAM cell.
 
-    The subtune-selector wrappers self-modify the play-JMP operand from init (a
-    ``TAX : LDA table,X : STA <play+2>`` patch keyed on the selected subtune), so
-    the header play-JMP's STATIC operand is not what runs.  Model init as a small
-    straight-line interpreter (following JMPs, tracking ``A``/``X``/``Y`` and known
-    stores) to recover the STABLE patched bytes for the followed subtune; every
-    read is bounds-guarded and unknown values are simply not recorded, so the
-    follower stays conservative (an unresolved patch leaves the JMP target unknown
-    and the tune deferred).  Stops on ``JSR``/``RTS``/``BRK`` or when control
-    reaches the resident player.
+    ``{addr: CellWrite}`` from :func:`~pysidtracker.init_effects` on a private copy
+    of ``mem``; empty when there is no init to run.
     """
-    patches: dict = {}
     if init is None:
-        return patches
-    acc, xreg, yreg = subtune & 0xFF, 0, 0
-    pc = init & 0xFFFF
-    for _ in range(constants.WRAP_INIT_BUDGET):
-        if pc + 2 >= len(mem):
-            break
-        op = mem[pc]
-        if op == 0x4C:  # JMP abs
-            tgt = mem[pc + 1] | (mem[pc + 2] << 8)
-            if ((tgt - base) & 0xFFFF) < 0x900 or tgt == pc:  # into resident / self
-                break
-            pc = tgt
-            continue
-        if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- stop
-            break
-        length = OP_LEN[op]
-        acc, xreg, yreg = _sim_init_step(mem, patches, op, pc, acc, xreg, yreg)
-        pc = (pc + length) & 0xFFFF
-    return patches
-
-
-def _sim_init_step(mem, patches, op, pc, acc, xreg, yreg):
-    """One init instruction: update ``(A, X, Y)`` and record known stores."""
-    # pylint: disable=too-many-branches,too-many-return-statements
-    val = mem[pc + 1] if pc + 1 < len(mem) else 0
-    abs_addr = (mem[pc + 1] | (mem[pc + 2] << 8)) & 0xFFFF if pc + 2 < len(mem) else 0
-    if op == 0xA9:
-        return val, xreg, yreg
-    if op == 0xA2:
-        return acc, val, yreg
-    if op == 0xA0:
-        return acc, xreg, val
-    if op == 0xAA:
-        return acc, acc, yreg
-    if op == 0xA8:
-        return acc, xreg, acc
-    if op == 0x8A:
-        return xreg, xreg, yreg
-    if op == 0x98:
-        return yreg, xreg, yreg
-    if op == 0xAD:
-        return _wrap_read(mem, patches, abs_addr), xreg, yreg
-    if op == 0xA5:
-        return _wrap_read(mem, patches, val), xreg, yreg
-    if op == 0xBD:  # LDA abs,X
-        return (
-            None if xreg is None else _wrap_read(mem, patches, abs_addr + xreg),
-            xreg,
-            yreg,
-        )
-    if op == 0xB9:  # LDA abs,Y
-        return (
-            None if yreg is None else _wrap_read(mem, patches, abs_addr + yreg),
-            xreg,
-            yreg,
-        )
-    if op in (0x8D, 0x8E, 0x8C):  # STA/STX/STY abs
-        src = acc if op == 0x8D else (xreg if op == 0x8E else yreg)
-        if src is not None:
-            patches[abs_addr] = src & 0xFF
-        else:
-            patches.pop(abs_addr, None)
-    elif op in (0x85, 0x86, 0x84):  # STA/STX/STY zp
-        src = acc if op == 0x85 else (xreg if op == 0x86 else yreg)
-        if src is not None:
-            patches[val] = src & 0xFF
-        else:
-            patches.pop(val, None)
-    return acc, xreg, yreg
+        return {}
+    header = SidHeader(
+        b"PSID", 2, 0x7C, 0, init & 0xFFFF, 0, 1, 1, "", "", "", 0, 0, 0, 0, 0x7C
+    )
+    image = SidImage(bytearray(mem), 0, len(mem), header, b"", b"")
+    return init_effects(image, subtune, max_cycles=constants.WRAP_INIT_CYCLES).writes
 
 
 def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
     """True if EVERY path through the wrapper at ``play`` tail-JMPs to base+3.
 
-    A register-free control-flow walk (both sides of each conditional branch are
-    explored, bounded by :data:`constants.WRAP_FOLLOW_BUDGET`).  A path is benign
-    only if it reaches a ``JMP`` whose operand (after init's ``overlay`` patches)
-    is exactly the standard play entry ``base+3``.  It is rejected -- the wrapper
-    genuinely alters per-frame behaviour -- on any ``JSR`` (the body would run more
-    than once), any store to a SID register, any unmodelled opcode, or a ``JMP``
-    that resolves elsewhere.  A store that lands on a followed ``JMP``'s operand
-    bytes (a per-call self-modifying selector) is rejected too: its runtime target
-    is not the static one.  Counter self-modification (a divider rewriting its own
-    ``LDX`` immediate) is allowed -- it never touches a JMP operand, and every
-    branch still lands on a ``base+3`` JMP.
+    A register-free walk of both sides of each branch (bounded by
+    :data:`constants.WRAP_FOLLOW_BUDGET`); a ``JSR``/return, SID store, unmodelled
+    opcode, foreign ``JMP`` or store onto a followed ``JMP`` operand rejects it.
     """
     entry = (base + constants.STD_PLAY_REL) & 0xFFFF
     stack = [play & 0xFFFF]
@@ -436,9 +453,8 @@ def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
             length = OP_LEN[op]
             if pcx + length > len(mem):
                 return False
-            if op == 0x4C:  # JMP abs -- a tail (or an in-wrapper hop)
-                jmp_operands.add((pcx + 1) & 0xFFFF)
-                jmp_operands.add((pcx + 2) & 0xFFFF)
+            if op == OP_JMP:
+                jmp_operands.update(((pcx + 1) & 0xFFFF, (pcx + 2) & 0xFFFF))
                 lo = _wrap_read(mem, overlay, pcx + 1)
                 hi = _wrap_read(mem, overlay, pcx + 2)
                 if lo is None or hi is None:
@@ -451,29 +467,23 @@ def _wrapper_reaches_play(mem, base: int, play: int, overlay: dict) -> bool:
                     pcx = tgt  # a short hop that stays inside the wrapper -- follow
                     continue
                 return False
-            if op in (0x20, 0x60, 0x00, 0x6C):  # JSR / RTS / BRK / JMP() -- not benign
+            if op in _WRAP_STOP:
                 return False
             if op in BRANCH_OPS:
-                rel = mem[pcx + 1]
-                dest = (pcx + 2 + (rel - 256 if rel >= 0x80 else rel)) & 0xFFFF
-                stack.append(dest)
+                stack.append((pcx + 2 + s8(mem[pcx + 1])) & 0xFFFF)
                 pcx = (pcx + 2) & 0xFFFF
                 continue
             if op in ABS_STORE_OPS:
                 tgt = (mem[pcx + 1] | (mem[pcx + 2] << 8)) & 0xFFFF
-                if (
-                    SID_BASE <= tgt < SID_BASE + SID_REG_COUNT
-                ):  # SID write -- alters frame
+                if SID_BASE <= tgt < SID_BASE + SID_REG_COUNT:
                     return False
                 stores.add(tgt)
             elif op in ZP_STORE_OPS:
-                stores.add(mem[pcx + 1] & 0xFFFF)
+                stores.add(mem[pcx + 1])
             elif op not in INERT_OPS:
-                return False  # an unmodelled opcode -- not provably benign
+                return False
             pcx = (pcx + length) & 0xFFFF
-    if stores & jmp_operands:  # a per-call self-modifying JMP target
-        return False
-    return reached
+    return reached and not stores & jmp_operands
 
 
 def _play_wrapper_benign(
@@ -486,47 +496,38 @@ def _play_wrapper_benign(
     """
     if play is None or (play & 0xFFFF) == (base + constants.STD_PLAY_REL) & 0xFFFF:
         return True
-    overlay = _sim_init_patches(mem, base, init, 0)
+    overlay = {a: w.value for a, w in init_writes(mem, init, 0).items()}
     return _wrapper_reaches_play(mem, base, play, overlay)
 
 
 def wrapper_body(song: "Song", subtune: int) -> Tuple[int, int]:
     """The ``(body base, subtune)`` a subtune-selector wrapper selects for the song.
 
-    A DMC ``Song`` may be wrapped by an init routine (at ``song.init``) that
-    self-modifies the play ``JMP`` high byte to point at a different body section
-    and stashes the chosen subtune in a side cell, keyed on the requested song
-    (``TAX : LDA table,X : STA <play+2> : LDA table2,X : STA <cell> : JMP base``).
-    The standard render passes ``subtune`` straight to the primary body and renders
-    from frame 0, so it renders the wrong section/subtune for such a song.
-
-    Returns the primary ``song.base`` unchanged for an unwrapped entry or a wrapper
-    that does not self-modify the play (a benign thunk/divider, the identity
-    single-body case).  For a self-modifying selector it follows init's own
-    self-patches (via :func:`_sim_init_patches`) to the song's body section and
-    recovers the chosen subtune from the selector's non-body cell.
+    A selector init self-modifies the play ``JMP`` to another page-aligned DMC body
+    and stashes the chosen subtune in a side cell; the primary ``song.base`` and
+    ``subtune`` are returned for any other entry.
     """
     mem = song.mem
     base = song.base
     play = song.play & 0xFFFF
-    init = song.init & 0xFFFF
-    if play == (base + constants.STD_PLAY_REL) & 0xFFFF:
+    if play == (base + constants.STD_PLAY_REL) & 0xFFFF or mem[play] != OP_JMP:
         return base, subtune
-    overlay = _sim_init_patches(mem, base, init, subtune)
-    if not overlay or (play + 1 not in overlay) and (play + 2 not in overlay):
+    writes = init_writes(mem, song.init, subtune)
+    operand = (play + 1, play + 2)
+    if not any(a in writes for a in operand):
         return base, subtune  # not a self-modifying play selector
-    lo = _wrap_read(mem, overlay, play + 1)
-    hi = _wrap_read(mem, overlay, play + 2)
-    if lo is None or hi is None or mem[play] != 0x4C:
-        return base, subtune
+    lo, hi = (writes[a].value if a in writes else mem[a] for a in operand)
     body_base = (lo | (hi << 8)) & 0xFF00  # DMC bodies are page-aligned
     if body_base == (base & 0xFF00) or find_dmc_base(mem, body_base) is None:
         return base, subtune  # same body, or no DMC body there -- keep the primary
-    body_page = (body_base >> 8) & 0xFF
+    page = body_base >> 8
+    bodies = (base, body_base)
     chosen = {
-        value & 0xFF
-        for addr, value in overlay.items()
-        if addr not in (play + 1, play + 2) and (value & 0xFF) != body_page
+        w.value
+        for a, w in writes.items()
+        if a not in operand
+        and w.value != page
+        and not any(0 <= w.pc - b < constants.WRAP_BODY_SPAN for b in bodies)
     }
     return body_base, (next(iter(chosen)) if len(chosen) == 1 else 0)
 
@@ -550,97 +551,81 @@ def _helper_zeros_adsr(mem, addr: int) -> bool:
     return seen_ad and seen_sr
 
 
-def release_clears_adsr(mem, base: int) -> Optional[bool]:
-    """Whether the note-release (``base+$33d``) also zeroes AD/SR, or ``None``.
+def release_site(mem, base: int) -> Optional[Finding]:
+    """The note-release (``base+$33d``) gate-off form, or ``None`` if unrecognised.
 
-    The release gate-off is either an inline store or a ``JSR`` to a small helper,
-    and either form may or may not zero AD/SR (an envelope-clearing hard-restart).
-    Both DMC generations ship both variants, so the behaviour is read from the
-    code rather than assumed per generation:
-
-    * inline ``STA $100f,X`` (opcode ``$9D``) -- the stock ``$37`` gate-off, AD/SR
-      left static -> ``False``.
-    * ``JSR`` (opcode ``$20``) to a helper -- follow it: ``True`` if the helper
-      stores ``$D405,Y``/``$D406,Y`` before ``RTS`` (the ``$1d`` ``$17ec`` clear,
-      or a ``$37`` scene edit), else ``False`` (a bare ``STA $100f,X : RTS``).
-    * any other opcode -- an unrecognised release edit -> ``None`` (recognised
-      but not reproduced byte-exact).
+    ``inline`` (``STA $100f,X``), ``clear`` (a ``JSR`` to a helper that zeroes
+    AD/SR before ``RTS``) or ``keep`` (a helper that leaves AD/SR), read from code.
     """
-    site = base + constants.V37_RELEASE_SITE_REL
-    if site + 2 >= len(mem):
-        return False
-    op = mem[site]
-    if op == 0x9D:  # STA $100f,X -- stock inline gate-off store
-        return False
-    if op == 0x20:  # JSR <helper>
-        return _helper_zeros_adsr(mem, mem[site + 1] | (mem[site + 2] << 8))
-    return None
+    site = (base + constants.V37_RELEASE_SITE_REL) & 0xFFFF
+    hit = _site(_RELEASE_SITE, mem, site)
+    if hit is None:
+        return None
+    if hit.alt == "call":
+        clears = _helper_zeros_adsr(mem, hit.captures["helper"])
+        return Finding("clear" if clears else "keep", detected(site))
+    return Finding("inline", detected(site))
+
+
+def release_clears_adsr(mem, base: int) -> Optional[bool]:
+    """Whether the note-release also zeroes AD/SR, or ``None`` (an unrecognised edit).
+
+    Both generations ship clearing and non-clearing releases (see :func:`release_site`).
+    """
+    found = release_site(mem, base)
+    return None if found is None else found.value == "clear"
+
+
+def onset_ctrl_site(mem, base: int) -> Optional[Finding]:
+    """The init-$37 note-fetch ``LDA #ctrl : STA $D404,Y`` immediate ($11D9), if modelled."""
+    site = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
+    hit = _site(_ONSET_CTRL_SITE, mem, site)
+    return None if hit is None else Finding(hit.captures["ctrl"], detected(site))
 
 
 def v37_onset_ctrl(mem, base: int) -> int:
-    """The CTRL immediate the init-$37 note-fetch writes to ``$D404`` ($11D9).
+    """The CTRL immediate the init-$37 note-fetch writes to ``$D404`` (stock ``$08``)."""
+    found = onset_ctrl_site(mem, base)
+    return constants.V37_ONSET_CTRL if found is None else found.value
 
-    The stock body silences the oscillator with ``LDA #$08 : STA $D404,Y`` (the
-    TEST bit); a couple of builds patch the immediate (e.g. ``#$40``).  Read it
-    from the code when the site is the modelled ``LDA #imm`` feeding an inline
-    ``STA $D404,Y`` ($99); otherwise fall back to the stock ``$08``.
-    """
-    site = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
-    if site + 2 < len(mem) and mem[site] == 0xA9 and mem[site + 2] == 0x99:
-        return mem[site + 1]
-    return 0x08
+
+def v1d_onset_site(mem, base: int) -> Optional[Finding]:
+    """``nop`` when the init-$1d onset-helper call ($11DB) is a ``BIT`` no-op, else ``None``."""
+    site = (base + constants.V1D_ONSET_CALL_REL) & 0xFFFF
+    if site + 2 < len(mem) and mem[site] == constants.V1D_ONSET_BIT_OP:
+        return Finding("nop", detected(site))
+    return None
 
 
 def v1d_note_onset(mem, base: int):
-    """The init-$1d note-onset SID writes emitted at note-fetch ($11DB helper call).
+    """``(ctrl, adsr)`` the init-$1d note-fetch onset helper writes, or ``(None, None)``.
 
-    The stock body reaches the onset via ``JSR $17FB``: the helper stores
-    ``CTRL`` (the ``LDA #$08`` immediate at $11D9) then ``AD=SR=$0F``.  A
-    hand-patched build overwrites the ``JSR`` opcode with an illegal 3-byte
-    ``BIT`` no-op ($2C), so the note-fetch frame emits NO SID write and the note
-    onsets a frame later (at instrument-init).  Read from the code so both are
-    modelled.  Returns ``(ctrl_val, adsr_imm)`` for the stock call, or
-    ``(None, None)`` when the call is the ``BIT`` no-op.
+    The stock ``JSR $17FB`` writes ``CTRL`` (the ``LDA #imm`` at $11D9, else ``$08``)
+    then ``AD=SR=$0F``; a ``BIT`` no-op patch writes nothing (the onset slips a frame).
     """
-    site = (base + constants.V1D_ONSET_CALL_REL) & 0xFFFF
-    if site + 2 >= len(mem):
-        return (0x08, constants.V1D_ONSET_ADSR_IMM)
-    ctrl_val = 0x08
-    imm = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
-    if imm + 1 < len(mem) and mem[imm] == 0xA9:  # LDA #imm -> CTRL byte
-        ctrl_val = mem[imm + 1]
-    if mem[site] == constants.V1D_ONSET_BIT_OP:  # BIT abs -- onset call no-op'd
+    if v1d_onset_site(mem, base) is not None:
         return (None, None)
-    return (ctrl_val, constants.V1D_ONSET_ADSR_IMM)
+    imm = (base + constants.V1D_ONSET_CTRL_REL) & 0xFFFF
+    ctrl = mem[imm + 1] if imm + 1 < len(mem) and mem[imm] == 0xA9 else 0x08
+    return (ctrl, constants.V1D_ONSET_ADSR_IMM)
 
 
-def tail_d418_force(mem, base: int):
-    """The per-frame ``$D418`` filter-type value a patched play-body tail forces.
+def tail_d418_site(mem, base: int) -> Optional[Finding]:
+    """The ``$D418`` immediate a ``JSR``-patched play-body tail ($10AC) forces, if any.
 
-    The stock play body ends the frame with ``STA $D417`` (opcode ``$8D``) at
-    $10AC.  A few hand-patched builds overwrite that store with ``JSR <helper>``
-    where the helper does the moved ``STA $D417`` then forces the filter-type
-    nibble every frame: ``LDA #imm ; ORA $1717 ; STA $D418``.  Returns ``imm``
-    (OR'd with the base ``$1717`` value at playback) when the tail matches that
-    exact shape, else ``None`` (stock tail -- no extra ``$D418`` write).
+    The helper does the moved ``STA $D417`` then ``LDA #imm : ORA $1717 : STA $D418``.
     """
     site = (base + constants.TAIL_STORE_REL) & 0xFFFF
-    if site + 2 >= len(mem) or mem[site] != 0x20:  # not a JSR-redirected tail
+    if site + 2 >= len(mem) or mem[site] != OP_JSR:
         return None
-    tgt = mem[site + 1] | (mem[site + 2] << 8)
-    if tgt + 10 >= len(mem):
-        return None
-    # helper: 8D 17 D4 (STA $D417) | A9 imm | 0D lo hi (ORA base d418) | 8D 18 D4
-    if (
-        mem[tgt] == 0x8D
-        and (mem[tgt + 1] | (mem[tgt + 2] << 8)) == 0xD417
-        and mem[tgt + 3] == 0xA9
-        and mem[tgt + 5] == 0x0D
-        and mem[tgt + 8] == 0x8D
-        and (mem[tgt + 9] | (mem[tgt + 10] << 8)) == 0xD418
-    ):
-        return mem[tgt + 4]
-    return None
+    hit = _site(_TAIL_D418_HELPER, mem, mem[site + 1] | (mem[site + 2] << 8))
+    return None if hit is None else Finding(hit.captures["imm"], detected(site))
+
+
+def tail_d418_force(mem, base: int) -> Optional[int]:
+    """The per-frame ``$D418`` value a patched tail forces, or ``None`` (stock tail)."""
+    found = tail_d418_site(mem, base)
+    return None if found is None else found.value
 
 
 def pw_min_shift(mem, base: int) -> int:
@@ -663,59 +648,6 @@ def pw_min_shift(mem, base: int) -> int:
     return shift
 
 
-def _norm_a1_body(mem, base: int) -> Optional[bytes]:
-    """The ``$a1`` play body ($a1..$70e) with per-tune bytes zeroed, or ``None``.
-
-    Zeroes the operand of every 3-byte instruction whose target lies in the
-    per-tune data region (``>= base+$846``) plus the two patchable release
-    opcodes, leaving only the load-invariant engine opcodes -- identical across
-    the whole family.  Walking with :data:`OP_LEN` keeps the operand positions
-    aligned; a non-family body normalises differently and fails the hash.
-    """
-    hi = base + constants.A1_BODY_HI
-    if hi > len(mem):
-        return None
-    out = bytearray(mem[base + constants.A1_BODY_LO : hi])
-    pc = constants.A1_BODY_LO
-    while pc < constants.A1_BODY_HI:
-        op = mem[base + pc]
-        length = OP_LEN[op]
-        if pc + length > constants.A1_BODY_HI:  # instr straddles the body end:
-            return None  # walk desynced from the canonical layout -- not a match
-        if length == 3:
-            operand = mem[base + pc + 1] | (mem[base + pc + 2] << 8)
-            if ((operand - base) & 0xFFFF) >= constants.A1_DATA_REL:
-                out[pc - constants.A1_BODY_LO + 1] = 0
-                out[pc - constants.A1_BODY_LO + 2] = 0
-        pc += length
-    out[constants.A1_REL_SR_CLEAR_REL - constants.A1_BODY_LO] = 0
-    out[constants.A1_REL_GATE_REL - constants.A1_BODY_LO] = 0
-    return bytes(out)
-
-
-def _a1_body_ok(mem, base: int) -> bool:
-    """True if ``base+$a1`` carries the modelled ``$a1`` engine body signature."""
-    body = _norm_a1_body(mem, base)
-    if body is None:
-        return False
-    return hashlib.sha256(body).hexdigest() == constants.A1_BODY_SHA256
-
-
-def a1_order_table_base(mem, base: int) -> Optional[int]:
-    """Return the ``$a1`` per-subtune orderlist pointer-table base, or ``None``.
-
-    Read from the init copy ``LDA <ordertable>,Y : STA $17cf,X`` (the store
-    ``9D`` to ``base+$17cf``, low byte of the per-voice orderlist-ptr array),
-    which locates it whatever the init layout (the init region floats with the
-    id-string, and some builds relocate it wholesale past the data)."""
-    store_addr = (base + constants.A1_ORDER_STORE_REL - 0x1000) & 0xFFFF
-    sig = bytes((0x9D, store_addr & 0xFF, store_addr >> 8))
-    idx = mem.find(sig, base, min(len(mem), base + 0x2000))
-    if idx >= 3 and mem[idx - 3] == 0xB9:
-        return mem[idx - 2] | (mem[idx - 1] << 8)
-    return None
-
-
 def _a1_byte_exact(mem, base: int, play, init) -> bool:
     """Whether the ``$a1`` body at ``base`` is reproduced byte-exact.
 
@@ -731,11 +663,24 @@ def _a1_byte_exact(mem, base: int, play, init) -> bool:
     )
     if not resident and not _play_wrapper_benign(mem, base, play, init):
         return False
-    if mem[base + constants.A1_REL_SR_CLEAR_REL] not in (0x99, 0x2C):
+    if a1_release_sr(mem, base) is None or a1_release_gate(mem, base) is None:
         return False
-    if mem[base + constants.A1_REL_GATE_REL] not in (0x9D, 0x2C):
-        return False
-    return a1_order_table_base(mem, base) is not None
+    return order_table_base(mem, base, "a1") is not None
+
+
+def _labelled_site(pattern, mem, addr: int) -> Optional[Finding]:
+    hit = _site(pattern, mem, addr)
+    return None if hit is None else Finding(hit.alt, detected(addr))
+
+
+def a1_release_sr(mem, base: int) -> Optional[Finding]:
+    """The ``$a1`` release SR-clear ($16c7): ``clear`` (``STA $d406,Y``) or ``nop``."""
+    return _labelled_site(_A1_SR_SITE, mem, (base + constants.A1_REL_SR_CLEAR_REL))
+
+
+def a1_release_gate(mem, base: int) -> Optional[Finding]:
+    """The ``$a1`` release gate-off mask ($16e3): ``mask`` (``STA $1817,X``) or ``nop``."""
+    return _labelled_site(_A1_GATE_SITE, mem, (base + constants.A1_REL_GATE_REL))
 
 
 def _n95_byte_exact(mem, base: int, play, init) -> bool:
@@ -750,7 +695,7 @@ def _n95_byte_exact(mem, base: int, play, init) -> bool:
         return False
     if init is not None and not base <= init < base + win:
         return False
-    return n95_order_table_base(mem, base) is not None
+    return order_table_base(mem, base, "n95") is not None
 
 
 def _nn_body_modelled(mem, base: int) -> bool:
@@ -783,17 +728,33 @@ def _nn_wrapper_937(mem, base: int, play, init) -> bool:
         return False
     if not _nn_body_modelled(mem, base):
         return False
-    body = (base + constants.NN937_BODY_REL) & 0xFFFF
-    if body + 8 >= len(mem):
+    hit = _site(_NN937_DISPATCH, mem, (base + constants.NN937_BODY_REL) & 0xFFFF)
+    if hit is None:
         return False
-    if mem[body] != 0xAD or mem[body + 3] != 0xF0 or mem[body + 5] != 0x20:
-        return False  # not ``LDA flag / BEQ full / JSR refresh``
-    steady = mem[body + 6] | (mem[body + 7] << 8)
+    steady = hit.captures["steady"]
     if ((steady - base) & 0xFFFF) != constants.NN937_STEADY_REL:
         return False
-    if steady + 4 >= len(mem) or mem[steady] != 0xAC or mem[steady + 3] != 0xB9:
-        return False  # refresh body is not ``LDY phase / LDA mask,Y``
+    if _site(_NN937_REFRESH, mem, steady) is None:
+        return False
     return play + 2 < len(mem) and mem[play] == constants.NN937_DEC_OP
+
+
+def nn937_divider(mem, play: int, init: int) -> Tuple[Optional[Finding], ...]:
+    """The ``$937`` divider ``(reload, seed)``: each wrapper's ``LDX #imm : STX counter``.
+
+    ``counter`` is the play wrapper's ``DEC`` operand; a missing pair is ``None``.
+    """
+    counter = (mem[play + 1] | (mem[play + 2] << 8)) & 0xFFFF
+    found = []
+    for lo in (play, init):
+        hits = find_code_all(
+            mem, _NN937_DIVIDER, start=lo, end=lo + constants.NN937_WRAP_SCAN
+        )
+        hit = next((h for h in hits if h.captures["counter"] == counter), None)
+        found.append(
+            None if hit is None else Finding(hit.captures["imm"], detected(hit.addr))
+        )
+    return tuple(found)
 
 
 def _nn_byte_exact(mem, base: int, play, init) -> bool:
@@ -876,6 +837,8 @@ class Song:
     name: str = ""
     author: str = ""
     header: Optional[Any] = None  # source PSID/RSID header (None for a bare .prg)
+    layout: Optional[str] = None  # the :data:`LAYOUTS` strategy that located the base
+    dispatch: Optional[Dispatch] = None  # the located dispatch (None when re-based)
     # Per-song memo of the code-read decode (variant, byte-exactness), so the
     # body is decoded once however many consumers ask.
     _decoded: dict = field(default_factory=dict, init=False, repr=False, compare=False)
@@ -907,6 +870,16 @@ class Song:
             )
         return self._decoded["byte_exact"]
 
+    def facets(self):
+        """The song's :class:`~pysidtracker.facets.Variant` (see :mod:`pydmcsid.variant`)."""
+        if "facets" not in self._decoded:
+            from pydmcsid.variant import (
+                FACETS,
+            )  # pylint: disable=import-outside-toplevel
+
+            self._decoded["facets"] = FACETS.detect(self)
+        return self._decoded["facets"]
+
 
 def parse(data: bytes) -> Song:
     """Parse SID/PRG ``data`` bytes into a :class:`Song`.
@@ -919,9 +892,12 @@ def parse(data: bytes) -> Song:
         image = SidImage.from_bytes(data)
     except SidError as exc:
         raise DmcParseError(str(exc)) from exc
-    base = find_dmc_base(image.mem, image.load)
-    if base is None:
-        raise DmcParseError("image does not carry the DMC player signature")
+    located = locate_dmc(image.mem, image.load)
+    if not located.ok:
+        raise DmcParseError(
+            "image does not carry the DMC player signature: " + located.describe()
+        )
+    base = located.layout.base
     variant = dmc_variant(image.mem, base)
     if variant is None:
         raise DmcParseError(
@@ -953,6 +929,8 @@ def parse(data: bytes) -> Song:
         name=name,
         author=author,
         header=header,
+        layout=located.strategy,
+        dispatch=located.layout,
     )
     song._decoded["variant"] = variant  # pylint: disable=protected-access
     return song

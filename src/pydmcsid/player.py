@@ -35,20 +35,7 @@ from pysidtracker.registers import (
 )
 
 from pydmcsid import constants
-from pydmcsid.reader import (
-    Song,
-    _nn_wrapper_937,
-    a1_order_table_base,
-    n95_order_table_base,
-    order_table_base,
-    parse,
-    pw_min_shift,
-    release_clears_adsr,
-    tail_d418_force,
-    v1d_note_onset,
-    v37_onset_ctrl,
-    wrapper_body,
-)
+from pydmcsid.reader import Song, parse, wrapper_body
 
 
 class DmcPlayer(MemPlayer):
@@ -87,7 +74,6 @@ class DmcPlayer(MemPlayer):
     g_filt = 0x1034  # filter voice-routing bits | reso accum (-> $D417)
     g_vibtoggle = 0x1035  # vibrato/pitch-bend half-rate toggle
     g_bendscratch = 0x1036  # pitch-bend abs-step scratch
-    order_table_op = constants.ORDER_TABLE_OP
     vib_seed_op = None  # v1d-only note-indexed vib-delta seed table operand
 
     def __new__(cls, source, subtune: int = 0):
@@ -109,6 +95,7 @@ class DmcPlayer(MemPlayer):
                 base=base,
                 play=(base + constants.STD_PLAY_REL) & 0xFFFF,
                 init=base,
+                dispatch=None,
             )
         self.song = song
         self.base = self.load = base
@@ -134,7 +121,7 @@ class DmcPlayer(MemPlayer):
 
     def _setup(self, song: Song) -> None:
         """Resolve the init-$37 per-tune table bases from the resident code."""
-        mem = song.mem
+        build = song.facets()
         self._curpat: List[Tuple[int, int]] = [(0, 0)] * 3
         self.finished = False
         self.b_freqlo = self._operand(constants.FREQ_LO_OP)
@@ -142,12 +129,7 @@ class DmcPlayer(MemPlayer):
         self.b_instr = self._operand(constants.INSTR_OP)
         self.b_pat_lo = self._operand(constants.PATTERN_LO_OP)
         self.b_pat_hi = self._operand(constants.PATTERN_HI_OP)
-        # Prefer the init-store-site signature (layout-independent); fall back to
-        # the fixed code operand for the standard layouts if it is not found.
-        order_sig = order_table_base(mem, song.base)
-        self.b_order_tbl = (
-            order_sig if order_sig is not None else self._operand(self.order_table_op)
-        )
+        self.b_order_tbl = build["order_table"]
         self.b_pwtab = self._operand(constants.PW_TABLE_OP)
         self.b_arp_ctrl = self._operand(constants.ARP_CTRL_OP)
         self.b_arp_note = self._operand(constants.ARP_NOTE_OP)
@@ -155,28 +137,12 @@ class DmcPlayer(MemPlayer):
         self.b_filt_step_lo = self._operand(constants.FILT_STEP_LO_OP)
         self.b_filt_step_hi = self._operand(constants.FILT_STEP_HI_OP)
         self.b_vibseed = self._operand(self.vib_seed_op) if self.vib_seed_op else 0
-        # Whether the note-release also zeroes AD/SR (an envelope-clearing hard-
-        # restart), read from the actual release code -- both generations ship
-        # clearing and non-clearing release helpers (see ``release_clears_adsr``).
-        self._release_clears_adsr = release_clears_adsr(mem, song.base) is True
-        # Right-shift forming the PW-sweep min bound ($124b): 4 for the stock
-        # ``inst[2]>>4`` chain, 2 for the ``$17`` no-op-patched build (read from
-        # the code, so hand-patched builds are modelled without regressing stock).
-        self._pw_min_shift = pw_min_shift(mem, song.base)
-        # $ff loop: JSR handler jumps to a target (next byte) vs STA $00 resets to order 0
-        self._order_loop_target = (
-            mem[song.base + constants.ORDER_LOOP_HANDLER_REL]
-            == constants.ORDER_LOOP_JSR_OP
-        )
-        # A few builds redirect the play-body tail ($10AC STA $D417) to a helper
-        # that also forces the $D418 filter-type nibble every frame; the forced
-        # immediate (OR'd with $1717) is read from the code (``None`` = stock).
-        self._tail_d418 = tail_d418_force(mem, song.base)
-        # Note-fetch CTRL immediate ($11D9 LDA #imm ; $11DB STA $D404,Y): the
-        # init-$37 TEST-bit value ($08 stock, a per-tune code constant).  The
-        # init-$1d body overrides this in ``_setup_cells`` (its onset is a
-        # helper call that also writes AD/SR, or a ``BIT`` no-op).
-        self._onset_ctrl = v37_onset_ctrl(mem, song.base)
+        # The code-read build quirks (see :mod:`pydmcsid.variant`).
+        self._release_clears_adsr = build["release"] == "clear"
+        self._pw_min_shift = build["pw_min_shift"]
+        self._order_loop_target = build["order_loop"] == "jump"
+        self._tail_d418 = build["tail_d418"]
+        self._onset_ctrl = build["onset_ctrl"]
         self._onset_adsr = None
         self._setup_cells()
 
@@ -766,30 +732,28 @@ class PlayerV1D(DmcPlayer):
       frame (not one frame later) and the SR gets the sustain override.
     """
 
-    order_table_op = constants.ORDER_TABLE_OP_V1D
     vib_seed_op = constants.VIB_SEED_OP
 
     def _setup_cells(self) -> None:
-        mem = self.song.mem
+        build = self.song.facets()
         # The $1d sub-layouts relocate a 9-cell block (note[3], inst[3], filt,
-        # vib-toggle, bend) as a unit; its base is read from the note-store
-        # operand at $11A6.  inst=note+3, filt=note+6, toggle=note+7, bend=note+8.
-        note = self._operand(constants.NOTE_CELL_OP) - self.rel
+        # vib-toggle, bend) as a unit, based at the note-store operand ($11A6).
+        note = build["note_cells"] - self.rel
         self.c_note = note & 0xFFFF
         self.c_inst = (note + 3) & 0xFFFF
         self.g_filt = (note + 6) & 0xFFFF
         self.g_vibtoggle = (note + 7) & 0xFFFF
         self.g_bendscratch = (note + 8) & 0xFFFF
         # rest/tie/legato tail ($1180): full steady tick ($1322) or re-output only.
-        tail = (self._operand(constants.REST_TAIL_OP) - self.load) & 0xFFFF
-        self._rest_via_1322 = tail == constants.REST_TAIL_1322
-        # hard-restart burst FREQ immediate ($130A: LDA #imm) -- $ff for nearly
-        # all tunes, but a per-tune code constant.
-        self._burst_imm = mem[self.load + constants.BURST_IMM_REL]
-        # Note-onset SID writes ($11DB helper call): the stock ``JSR $17FB``
-        # emits CTRL then AD=SR=$0F; a ``BIT`` no-op patch emits nothing (the
-        # onset slips a frame).  Read from the code (see ``v1d_note_onset``).
-        self._onset_ctrl, self._onset_adsr = v1d_note_onset(mem, self.load)
+        self._rest_via_1322 = build["rest_tail"] == constants.REST_TAIL_1322
+        self._burst_imm = build["burst_imm"]  # hard-restart burst FREQ ($130A)
+        # Note-onset ($11DB): the stock helper writes CTRL then AD=SR=$0F; a
+        # ``BIT`` no-op patch writes nothing (the onset slips a frame).
+        if build["onset"] == "nop":
+            self._onset_ctrl = self._onset_adsr = None
+        else:
+            self._onset_ctrl = build["onset_ctrl"]
+            self._onset_adsr = constants.V1D_ONSET_ADSR_IMM
 
     def _rest_tail(self, x: int) -> None:
         """The shared $117D tail: $1322 steady tick or $1591 re-output per build."""
@@ -995,13 +959,12 @@ class PlayerA1(DmcPlayer):
     """
 
     def _setup(self, song: Song) -> None:
-        mem = song.mem
         base = song.base
         self.finished = False
         self.f8 = 0  # pattern/orderlist pointer (zero-page $f8/$f9)
         self.f9 = 0
-        order = a1_order_table_base(mem, base)
-        self.b_order = order if order is not None else 0
+        build = song.facets()
+        self.b_order = build["order_table"]
         self.b_patlo = self._operand(constants.A1_PATTERN_LO_OP)
         self.b_pathi = self._operand(constants.A1_PATTERN_HI_OP)
         self.b_inst = self._operand(constants.A1_INST_OP)
@@ -1013,10 +976,8 @@ class PlayerA1(DmcPlayer):
         self.b_filtb = self._operand(constants.A1_FILT_B_OP)
         self.b_freqlo = (base + constants.A1_FREQ_LO_REL) & 0xFFFF
         self.b_freqhi = (base + constants.A1_FREQ_HI_REL) & 0xFFFF
-        # Per-build patchable release SR-clear ($16c7 STA $d406,Y == $99).
-        self._rel_clears_sr = (
-            mem[(base + constants.A1_REL_SR_CLEAR_REL) & 0xFFFF] == 0x99
-        )
+        # Per-build patchable release SR-clear ($16c7 STA $d406,Y).
+        self._rel_clears_sr = build["release_sr"] == "clear"
 
     def _ld(self, y: int) -> int:
         """``($f8),Y`` pattern/orderlist byte read (f8/f9 are absolute)."""
@@ -1587,15 +1548,11 @@ class Player95(DmcPlayer):
     """
 
     def _setup(self, song: Song) -> None:
-        mem = song.mem
         base = song.base
         self.finished = False
         self.fa = 0  # pattern/orderlist pointer (zero-page $fa/$fb)
         self.fb = 0
-        order = n95_order_table_base(mem, base)
-        self.b_order = (
-            order if order is not None else self._operand(constants.N95_ORDER_OP)
-        )
+        self.b_order = song.facets()["order_table"]
         self.b_patlo = self._operand(constants.N95_PATTERN_LO_OP)
         self.b_pathi = self._operand(constants.N95_PATTERN_HI_OP)
         self.b_inst = self._operand(constants.N95_INST_OP)
@@ -2205,30 +2162,11 @@ class Player937(PlayerNN):
 
     def _setup(self, song: Song) -> None:
         super()._setup(song)
-        # The wrapper (header play/init) is appended past the resident player; its
-        # divider counter cell + reload/seed immediates float with the build, so
-        # they are read from the wrapper code rather than assumed.
-        mem = song.mem
-        self._ctr = (mem[song.play + 1] | (mem[song.play + 2] << 8)) & 0xFFFF
-        self._reload = self._wrap_imm(song.play)  # counter reload (divider period)
-        self._ms = self._wrap_imm(song.init)  # counter seed (from the wrapper init)
-
-    def _wrap_imm(self, lo: int) -> int:
-        """The ``LDX #imm`` seed/reload immediate feeding ``STX counter`` at ``lo``.
-
-        Scans the short wrapper for the ``A2 imm : 8E <counter>`` pair; falls back
-        to 1 if absent, so a malformed wrapper never raises.
-        """
-        m = self.song.mem
-        hi = min(len(m), lo + constants.NN937_WRAP_SCAN)
-        for i in range(lo, hi - 4):
-            if (
-                m[i] == 0xA2
-                and m[i + 2] == 0x8E
-                and ((m[i + 3] | (m[i + 4] << 8)) & 0xFFFF) == self._ctr
-            ):
-                return m[i + 1]
-        return 1
+        # The appended wrapper's divider counter and its reload/seed immediates.
+        build = song.facets()
+        self._ctr = (song.mem[song.play + 1] | (song.mem[song.play + 2] << 8)) & 0xFFFF
+        self._reload = build["ms_reload"]
+        self._ms = build["ms_seed"]
 
     def _frame(self) -> None:
         """Run one wrapper call: the resident main play, or the refresh body."""
@@ -2261,7 +2199,7 @@ def _engine_class(song: Song):
     if variant == "n95":
         return Player95
     if variant == "nn":
-        if _nn_wrapper_937(song.mem, song.base, song.play, song.init):
+        if song.facets()["wrapper"] == "multispeed":
             return Player937
         return PlayerNN
     if variant == "v1d":

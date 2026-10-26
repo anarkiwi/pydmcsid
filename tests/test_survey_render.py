@@ -30,18 +30,28 @@ def test_render_matches_player(tune_path):
     [
         (
             "ode",
-            {"engine": "DmcPlayer", "variant": "v37", "wrapped": False},
+            {"engine": "DmcPlayer", "generation": "v37", "wrapper": "none"},
         ),
         (
             "katusha",
-            {"engine": "PlayerA1", "variant": "a1", "release_clears_adsr": None},
+            {
+                "engine": "PlayerA1",
+                "generation": "a1",
+                "release": None,
+                "release.src": "default",
+                "release_sr": "clear",
+                "release_sr.src": "detected@$16c7",
+            },
         ),
+        ("krupa_mix", {"engine": "PlayerV1D", "wrapper": "benign"}),
         (
             "dude",
             {
                 "engine": "Player937",
-                "variant": "nn",
-                "wrapped": True,
+                "generation": "nn",
+                "layout": "nn-dispatch",
+                "wrapper": "multispeed",
+                "ms_reload": 6,
                 "rsid": False,
                 "trigger": "cia_timer",
                 "speed": 6,
