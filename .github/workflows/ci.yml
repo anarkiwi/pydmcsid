@@ -25,7 +25,7 @@ jobs:
         run: black --check src/pydmcsid tests scripts
       - name: pylint
         run: pylint src/pydmcsid tests scripts
-      - uses: anarkiwi/pysidtracker/.github/actions/cache@v0.35.0
+      - uses: anarkiwi/pysidtracker/.github/actions/cache@v0.37.0
         with:
           key: ${{ hashFiles('tests/fixtures/*.txt', 'tests/*.py') }}
           tunes: tests tests/fixtures/dmc_corpus.txt
@@ -48,7 +48,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - uses: anarkiwi/pysidtracker/.github/actions/cache@v0.35.0
+      - uses: anarkiwi/pysidtracker/.github/actions/cache@v0.37.0
         with:
           key: ${{ hashFiles('tests/test_oracle_hvsc.py') }}
           sidtrace: "true"
