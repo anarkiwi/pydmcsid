@@ -76,7 +76,7 @@ def test_prg_roundtrip_from_bare_prg():
     body[0x85:0x88] = assemble("DEC $1718", base)[0]
     body[0x126] = 0xFE
     prg = bytes((base & 0xFF, base >> 8)) + bytes(body)
-    song = pydmcsid.parse(prg)
+    song = pydmcsid.parse(prg, strict=False)
     assert song.header is None
     assert song.init == base
     assert pydmcsid.to_prg(song) == prg

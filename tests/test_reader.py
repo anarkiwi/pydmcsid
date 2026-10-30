@@ -81,7 +81,7 @@ def test_parse_prg_stub_prepended_base_differs_from_load():
     stub = b"\xea" * 7  # 7-byte relocator stub (NOPs), base lands at $1000
     body = stub + _dmc_body(0x1000)
     prg = bytes([load & 0xFF, (load >> 8) & 0xFF]) + body
-    song = pydmcsid.parse(prg)
+    song = pydmcsid.parse(prg, strict=False)
     assert song.load == load
     assert song.base == 0x1000  # located past the stub, init-variant tolerant
     assert song.songs == 1  # bare PRG: single subtune, no header
@@ -91,7 +91,7 @@ def test_parse_prg_stub_prepended_base_differs_from_load():
 def test_parser_parse_method_returns_song():
     """``DmcSidParser().parse`` decodes bytes into a Song (the class API)."""
     prg = b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37)
-    song = DmcSidParser().parse(prg)
+    song = DmcSidParser().parse(prg, strict=False)
     assert song.base == 0x1000
     assert song.is_dmc()
     assert song.byte_exact()  # $37-generation marker
@@ -144,7 +144,7 @@ def test_parse_two_entry_dispatch_same_body():
     # Replace the stop/FUN JMP entries with non-JMP bytes: only init/play remain.
     body[6:12] = b"\xea" * 6
     prg = b"\x00\x10" + bytes(body)
-    song = DmcSidParser().parse(prg)
+    song = DmcSidParser().parse(prg, strict=False)
     assert song.base == 0x1000
     assert song.is_dmc()
     assert song.byte_exact()
@@ -153,7 +153,7 @@ def test_parse_two_entry_dispatch_same_body():
 def test_later_generation_recognised_byte_exact():
     """The init-$1d body (marker $7e) is recognised and now played byte-exact."""
     prg = b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x7E)
-    song = DmcSidParser().parse(prg)
+    song = DmcSidParser().parse(prg, strict=False)
     assert song.is_dmc()
     assert song.variant() == "v1d"
     assert song.byte_exact()
@@ -237,7 +237,7 @@ def test_a1_body_recognised_byte_exact(monkeypatch):
 
     body = _a1_body(0x1000)
     _set_a1_sha(monkeypatch, _a1_hash(body))
-    song = pydmcsid.parse(b"\x00\x10" + body)
+    song = pydmcsid.parse(b"\x00\x10" + body, strict=False)
     assert song.is_dmc()
     assert song.base == 0x1000
     assert song.variant() == "a1"
@@ -250,14 +250,14 @@ def test_a1_release_patch_and_order_gate(monkeypatch):
 
     body = _a1_body(0x1000, order_tbl=0x1888)
     _set_a1_sha(monkeypatch, _a1_hash(body))
-    song = pydmcsid.parse(b"\x00\x10" + body)
+    song = pydmcsid.parse(b"\x00\x10" + body, strict=False)
     assert order_table_base(song.mem, 0x1000, "a1") == 0x1888  # read from store site
     assert song.byte_exact()
 
     # An unmodelled opcode at the release SR-clear site is recognised, not exact.
     body2 = _a1_body(0x1000, sr_clear=0xEA)
     _set_a1_sha(monkeypatch, _a1_hash(body2))
-    song2 = pydmcsid.parse(b"\x00\x10" + body2)
+    song2 = pydmcsid.parse(b"\x00\x10" + body2, strict=False)
     assert song2.variant() == "a1"
     assert not song2.byte_exact()
 
@@ -271,7 +271,7 @@ def test_a1_does_not_misfire_on_base_body(monkeypatch):
 
     # Even with the $a1 hash active, a $85 body is not an $a1 body.
     _set_a1_sha(monkeypatch, _a1_hash(_a1_body(0x1000)))
-    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37), strict=False)
     assert v37.variant() == "v37"
     assert not _a1_body_ok(v37.mem, 0x1000)
 
@@ -295,7 +295,7 @@ def test_a1_norm_body_straddling_instruction_returns_none():
     assert norm_body(mem, base, A1_BODY) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
-        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]), strict=False)
 
 
 def _n95_body(base, order_tbl=0x1900, reload_seed=0x07):
@@ -343,7 +343,7 @@ def test_n95_body_recognised_byte_exact(monkeypatch):
 
     body = _n95_body(0x1000)
     _set_n95_sha(monkeypatch, _n95_hash(body))
-    song = pydmcsid.parse(b"\x00\x10" + body)
+    song = pydmcsid.parse(b"\x00\x10" + body, strict=False)
     assert song.is_dmc()
     assert song.base == 0x1000
     assert song.variant() == "n95"
@@ -360,13 +360,13 @@ def test_n95_reload_seed_wildcarded(monkeypatch):
 
     body1 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x01)
     _set_n95_sha(monkeypatch, _n95_hash(body1))
-    song1 = pydmcsid.parse(b"\x00\x10" + body1)
+    song1 = pydmcsid.parse(b"\x00\x10" + body1, strict=False)
     assert order_table_base(song1.mem, 0x1000, "n95") == 0x1888  # read from store site
     assert song1.variant() == "n95"
     # A different reload seed normalises to the SAME body hash.
     body2 = _n95_body(0x1000, order_tbl=0x1888, reload_seed=0x00)
     assert _n95_hash(body2) == _n95_hash(body1)
-    song2 = pydmcsid.parse(b"\x00\x10" + body2)
+    song2 = pydmcsid.parse(b"\x00\x10" + body2, strict=False)
     assert song2.variant() == "n95"
     assert song2.byte_exact()
 
@@ -388,7 +388,7 @@ def test_n95_does_not_misfire_on_base_body(monkeypatch):
     from pydmcsid.reader import _n95_body_ok
 
     _set_n95_sha(monkeypatch, _n95_hash(_n95_body(0x1000)))
-    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37), strict=False)
     assert v37.variant() == "v37"
     assert not _n95_body_ok(v37.mem, 0x1000)
 
@@ -406,7 +406,7 @@ def test_n95_norm_body_straddling_instruction_returns_none():
     assert norm_body(mem, base, N95_BODY) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
-        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]))
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x800]), strict=False)
 
 
 def _nn_body(note_onset=0x4C, vibrato=0x2C, second_play=0x1086):
@@ -434,7 +434,7 @@ def _nn_body(note_onset=0x4C, vibrato=0x2C, second_play=0x1086):
 
 def test_nn_body_recognised_byte_exact():
     """A synthetic $94a 2-level dispatch is recognised as "nn" and byte-exact."""
-    song = pydmcsid.parse(b"\x00\x10" + _nn_body())
+    song = pydmcsid.parse(b"\x00\x10" + _nn_body(), strict=False)
     assert song.is_dmc()
     assert song.base == 0x1001  # engine base derived from the second-level JMP
     assert song.variant() == "nn"
@@ -456,7 +456,7 @@ def test_nn_wrapped_and_subvariant_not_byte_exact():
     # The $85 sub-variant writes CTRL inline (STA $99) at the note onset instead of
     # the modelled JMP: recognised as "nn", not byte-exact.
     sub = _nn_body(note_onset=0x99)
-    song = pydmcsid.parse(b"\x00\x10" + sub)
+    song = pydmcsid.parse(b"\x00\x10" + sub, strict=False)
     assert song.variant() == "nn"
     assert not song.byte_exact()
 
@@ -465,10 +465,12 @@ def test_nn_does_not_misfire_on_base_bodies():
     """The $94a detector never claims the $85/$a1/$95 synthetic bodies."""
     from pydmcsid.reader import _nn_table_base
 
-    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    v37 = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37), strict=False)
     assert v37.variant() == "v37"
     assert _nn_table_base(v37.mem, 0x1000) is None
-    v1d = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
+    v1d = pydmcsid.parse(
+        b"\x00\x10" + _dmc_body(0x1000, init_rel=0x1D, marker=0x7E), strict=False
+    )
     assert v1d.variant() == "v1d"
     assert _nn_table_base(v1d.mem, 0x1000) is None
 
@@ -489,7 +491,7 @@ def test_nn_dispatch_bounds_safe():
     assert _nn_engine_base(mem, base + 0x94A, base) is None  # no IndexError
     assert find_dmc_base(mem, base) is None  # cleanly not recognised
     with pytest.raises(SidParseError):
-        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x960]))
+        pydmcsid.parse(b"\x00\x10" + bytes(mem[base : base + 0x960]), strict=False)
 
 
 def _nn937_image(reload=6, seed=1):
@@ -635,25 +637,25 @@ def test_release_clears_adsr_stock_clearing_and_unknown():
     """
     from pydmcsid.reader import release_clears_adsr
 
-    stock = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37))
+    stock = pydmcsid.parse(b"\x00\x10" + _dmc_body(0x1000, init_rel=0x37), strict=False)
     assert release_clears_adsr(stock.mem, stock.base) is False
     assert stock.byte_exact()
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x37))
     _put_release(m, 0x1000, jsr_target=0x1018, adsr_clear=True)
-    clearing = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    clearing = pydmcsid.parse(b"\x00\x10" + bytes(m), strict=False)
     assert release_clears_adsr(clearing.mem, clearing.base) is True
     assert clearing.byte_exact()
 
     m2 = bytearray(_dmc_body(0x1000, init_rel=0x37))
     _put_release(m2, 0x1000, jsr_target=0x1018, adsr_clear=False)
-    noclear = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    noclear = pydmcsid.parse(b"\x00\x10" + bytes(m2), strict=False)
     assert release_clears_adsr(noclear.mem, noclear.base) is False
     assert noclear.byte_exact()
 
     m3 = bytearray(_dmc_body(0x1000, init_rel=0x37))
     m3[0x33D] = 0xEA  # a NOP -- neither the inline store nor a JSR helper
-    unknown = pydmcsid.parse(b"\x00\x10" + bytes(m3))
+    unknown = pydmcsid.parse(b"\x00\x10" + bytes(m3), strict=False)
     assert release_clears_adsr(unknown.mem, unknown.base) is None
     assert not unknown.byte_exact()
 
@@ -670,12 +672,12 @@ def test_pw_min_shift_stock_and_patched():
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
     m[0x24B:0x252] = _asm("LSR A\nLSR A\nLSR A\nLSR A\nSTA $1756,X")
-    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m), strict=False)
     assert pw_min_shift(stock.mem, stock.base) == 4
 
     m2 = bytearray(m)
     m2[0x24D] = 0x17  # third LSR -> illegal 2-byte no-op
-    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2), strict=False)
     assert pw_min_shift(patched.mem, patched.base) == 2
 
 
@@ -690,17 +692,17 @@ def test_v37_onset_ctrl_stock_and_patched():
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x37))
     m[0x1D9:0x1DE] = _asm("LDA #$08\nSTA $D404,Y")
-    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m), strict=False)
     assert v37_onset_ctrl(stock.mem, stock.base) == 0x08
 
     m2 = bytearray(m)
     m2[0x1DA] = 0x40  # patched immediate
-    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2), strict=False)
     assert v37_onset_ctrl(patched.mem, patched.base) == 0x40
 
     m3 = bytearray(m)
     m3[0x1DB] = 0x2C  # store is not STA $D404,Y -> stock fallback
-    other = pydmcsid.parse(b"\x00\x10" + bytes(m3))
+    other = pydmcsid.parse(b"\x00\x10" + bytes(m3), strict=False)
     assert v37_onset_ctrl(other.mem, other.base) == 0x08
 
 
@@ -715,12 +717,12 @@ def test_v1d_note_onset_stock_and_bit_noop():
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
     m[0x1D9:0x1DE] = _asm("LDA #$08\nJSR $17FB")
-    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m), strict=False)
     assert v1d_note_onset(stock.mem, stock.base) == (0x08, 0x0F)
 
     m2 = bytearray(m)
     m2[0x1DB] = 0x2C  # JSR -> illegal BIT no-op: onset emits nothing
-    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2), strict=False)
     assert v1d_note_onset(patched.mem, patched.base) == (None, None)
 
 
@@ -735,13 +737,13 @@ def test_tail_d418_force_stock_and_patched():
 
     m = bytearray(_dmc_body(0x1000, init_rel=0x1D, marker=0x7E))
     m[0xAC:0xAF] = _asm("STA $D417")  # stock
-    stock = pydmcsid.parse(b"\x00\x10" + bytes(m))
+    stock = pydmcsid.parse(b"\x00\x10" + bytes(m), strict=False)
     assert tail_d418_force(stock.mem, stock.base) is None
 
     m2 = bytearray(m)
     m2[0xAC:0xAF] = _asm("JSR $1380")  # helper in-body
     m2[0x380:0x38B] = _asm("STA $D417\nLDA #$10\nORA $1717\nSTA $D418")
-    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2))
+    patched = pydmcsid.parse(b"\x00\x10" + bytes(m2), strict=False)
     assert tail_d418_force(patched.mem, patched.base) == 0x10
 
 
