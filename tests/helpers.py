@@ -22,7 +22,7 @@ TUNES = {
     "action_tank": "MUSICIANS/R/Robric/Action_Tank_2.sid",
     "insider": "MUSICIANS/W/Willi/Insider_01.sid",
     "rock_zak": "MUSICIANS/B/Brian/Rock_Zak_1.sid",
-    # init-$1d body (PlayerV1D): base + relocated + relocated-cell sub-layouts,
+    # init-$1d body (dmc spec): base + relocated + relocated-cell sub-layouts,
     # plus the patched shift/onset/tail-$D418 builds.
     "glorious": "MUSICIANS/B/Bakker_Nantco/Glorious.sid",
     "rocket": "MUSICIANS/B/Bayliss_Richard/Rocket_n_Roll.sid",
@@ -31,23 +31,23 @@ TUNES = {
     "nop_years": "MUSICIANS/A/Aomeba/20_Years_of_NOP.sid",
     "snowball": "MUSICIANS/B/Bayliss_Richard/Snowball_Caper_2.sid",
     "for_vandalism": "MUSICIANS/R/Rorschach/For_Vandalism_27.sid",
-    # $a1 engine (PlayerA1): canonical, relocated init, release-patched, and the
+    # $a1 engine (dmc_a1 spec): canonical, relocated init, release-patched, and the
     # portamento-into-vibrato path.
     "katusha": "DEMOS/G-L/Katusha.sid",
     "dum_dum": "MUSICIANS/F/Froyd/Dum_Dum.sid",
     "blutal": "MUSICIANS/C/CreaMD/Blutal_Haldcole.sid",
     "short_fusion": "MUSICIANS/P/PRI/Short_Fusion.sid",
-    # $95 engine (Player95): canonical + wildcarded tempo seed + second author.
+    # $95 engine (dmc_95 spec): canonical + wildcarded tempo seed + second author.
     "happy_rave": "DEMOS/G-L/Happy_Rave.sid",
     "popyjava": "MUSICIANS/B/Booker/Popyjava_Pyjakoof.sid",
     "intro_music": "MUSICIANS/B/Bakewell_Dwayne/Intro_Music.sid",
     "i_love_dmc": "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
-    # $94a family (PlayerNN): virtual-base layouts + second author.
+    # $94a family (dmc spec): virtual-base layouts + second author.
     "day_noter": "MUSICIANS/G/Glover/Day_Noter.sid",
     "high_balance": "MUSICIANS/G/Glover/High_Balance.sid",
     "poeci": "MUSICIANS/W/Wodnik/Poeci.sid",
     "ninety_sec": "MUSICIANS/P/Psych858o/90_Seconds.sid",
-    # $937 CIA-multispeed wrapper (Player937): all-voices + per-voice phase masks.
+    # $937 CIA-multispeed wrapper (dmc spec): all-voices + per-voice phase masks.
     "dude": "MUSICIANS/P/Psych858o/Dude_with_Attitude.sid",
     "rusty": "MUSICIANS/P/Psych858o/My_Rusty_Love_C64.sid",
     "losing": "MUSICIANS/P/Psych858o/Losing_Control.sid",

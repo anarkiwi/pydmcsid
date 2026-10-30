@@ -18,5 +18,5 @@ def render(data, song, nframes):
     """Render 1-based ``song`` of a DMC ``.sid`` and the build variant it decoded."""
     tune = parse(data)
     player = DmcPlayer(tune, subtune=song - 1)
-    info = {"engine": type(player).__name__, **_FORMAT.info(tune, data, song)}
+    info = {"engine": player.program().name, **_FORMAT.info(tune, data, song)}
     return np.asarray(player.render_grid(nframes), np.int16), info

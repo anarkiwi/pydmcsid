@@ -20,7 +20,6 @@ from pydmcsid.errors import DmcParseError
 
 INSTRUMENT_SIZE = 11
 VOICES = 3
-ORDER_STRIDE = 8
 
 
 @dataclass(frozen=True)
@@ -163,8 +162,8 @@ class Engine:
 
     ``order_ptr`` are the authored addresses of the per-voice order-list pointer
     low/high cells, ``order_index`` and ``pattern_index`` those of the per-voice
-    order and pattern cursors; ``pattern_lo``/``pattern_hi``/``instrument`` name
-    the player's table-base attributes.
+    order and pattern cursors; ``pattern_lo``/``pattern_hi``/``instrument_base``
+    name the layout fields holding the pattern-pointer and instrument tables.
     """
 
     pattern: str
@@ -186,9 +185,9 @@ _V37 = Engine(
     (constants.ORDER_PTR_LO, constants.ORDER_PTR_HI),
     0x1726,
     0x1729,
-    "b_pat_lo",
-    "b_pat_hi",
-    "b_instr",
+    "patlo",
+    "pathi",
+    "instr",
 )
 ENGINES = {
     "v37": _V37,
@@ -201,9 +200,9 @@ ENGINES = {
         (0x17CF, 0x17D2),
         0x17D5,
         0x17D8,
-        "b_patlo",
-        "b_pathi",
-        "b_inst",
+        "patlo",
+        "pathi",
+        "inst",
         order="order_x",
     ),
     "n95": Engine(
@@ -213,9 +212,9 @@ ENGINES = {
         (0x17D9, 0x17DC),
         0x17DF,
         0x17E2,
-        "b_patlo",
-        "b_pathi",
-        "b_inst",
+        "patlo",
+        "pathi",
+        "inst",
         order="order_x",
     ),
 }
@@ -269,44 +268,39 @@ def _read(mem, addr: int, rule: str, what: str) -> Parsed:
 def song_streams(song, subtune: int = 0) -> Iterator[Tuple[str, Stream, str]]:
     """``(name, stream, rule)`` for every stream ``subtune``'s voices reach.
 
-    Walks each voice's order list from the post-init order-list pointer cells, then
-    the patterns it names and the instruments those select, in the memory the
-    play routine reads.  Yields nothing for a body generation without a grammar
-    (see :func:`modelled`); a stream that does not parse raises
+    Walks each voice's order list from the subtune's order-table record, then the
+    patterns it names and the instruments those select, in the tune's memory.
+    Yields nothing for a body generation without a grammar (see
+    :func:`modelled`); a stream that does not parse raises
     :class:`~pydmcsid.errors.DmcParseError`.
     """
     # pylint: disable=import-outside-toplevel
-    from pydmcsid.player import DmcPlayer
+    from pydmcsid.spec import binding
 
-    player = DmcPlayer(song, subtune)
-    generation = player.song.variant()
-    if not modelled(generation):
+    if not modelled(song.variant()):
         return
+    layout, body, subtune = binding(song, subtune)
+    generation = body.variant()
     engine = ENGINES[generation]
-    mem = bytes(player.m)
-    build = player.song.facets()
+    mem = bytes(body.mem)
+    build = body.facets()
     order_name = order_rule(build, generation)
+    table = build["order_table"] + ((subtune << 3) & 0xFF)
     patterns: Set[int] = set()
     instruments: Set[int] = set()
     for voice in range(VOICES):
-        lo, hi = engine.order_ptr
-        ptr = mem[player._a(lo) + voice] | (mem[player._a(hi) + voice] << 8)
+        ptr = mem[table + 2 * voice] | (mem[table + 2 * voice + 1] << 8)
         order = _read(mem, ptr, order_name, f"voice {voice} order list")
         yield f"voice{voice}.order", order.model, order_name
         patterns.update(order.model.numbers(*_ORDER_KINDS))
     for number in sorted(patterns):
-        addr = _word(
-            mem,
-            getattr(player, engine.pattern_lo),
-            getattr(player, engine.pattern_hi),
-            number,
-        )
+        addr = _word(mem, layout[engine.pattern_lo], layout[engine.pattern_hi], number)
         parsed = _read(mem, addr, engine.pattern, f"pattern {number}")
         yield f"pattern{number}", parsed.model, engine.pattern
         instruments.update(instrument_numbers(parsed.model))
     for number in sorted(instruments):
         addr = (
-            getattr(player, engine.instrument_base) + number * engine.instrument_size
+            layout[engine.instrument_base] + number * engine.instrument_size
         ) & 0xFFFF
         record = _read(mem, addr, engine.instrument, f"instrument {number}")
         yield f"instrument{number}", record.model, engine.instrument

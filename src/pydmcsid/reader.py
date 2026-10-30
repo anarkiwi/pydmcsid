@@ -721,7 +721,7 @@ def _nn_wrapper_937(mem, base: int, play, init) -> bool:
     ``LDA flag / BEQ / JSR refresh`` whose refresh entry is the per-voice masked
     non-row tick at ``base+$8f0`` (see :data:`constants.NN937_BODY_REL`).  Both
     entries drive the modelled ``$85``/``$1d`` body, so it is reproduced byte-exact
-    by :class:`~pydmcsid.player.Player937`.  All reads are bounds-guarded so a
+    by :class:`~pydmcsid.player.DmcPlayer`.  All reads are bounds-guarded so a
     truncated image returns ``False`` rather than raising.
     """
     if play is None or init is None:
@@ -761,10 +761,10 @@ def _nn_byte_exact(mem, base: int, play, init) -> bool:
     """Whether the ``$94a``-family body at ``base`` is reproduced byte-exact.
 
     The reproducible members are the init-``$1d`` (``$85``) body relocated behind
-    the 2-level dispatch, played by :class:`~pydmcsid.player.PlayerNN` at the
+    the 2-level dispatch, played by :class:`~pydmcsid.player.DmcPlayer` at the
     derived base.  A build whose header play/init resolve outside the resident
     dispatch is byte-exact only when it is the ``$937`` CIA-multispeed appended
-    wrapper (:func:`_nn_wrapper_937`, played by :class:`Player937`); any other
+    wrapper (:func:`_nn_wrapper_937`); any other
     outside-window wrapper (a second engine / self-modifying selector) is gated
     out.  A resident-dispatch build is byte-exact only when its note-onset /
     vibrato-setup encoding is the modelled form (:func:`_nn_body_modelled`); the

@@ -9,7 +9,7 @@ from pysidtracker.playspec.tv import validate
 
 import pydmcsid
 from pydmcsid import DmcPlayer
-from pydmcsid.spec import GENERATIONS, binding, spec, spec_player, supported
+from pydmcsid.spec import GENERATIONS, binding, spec, supported
 
 STACK = slice(0x100, 0x200)
 
@@ -40,13 +40,13 @@ def test_spec_elaborates_for_every_layout(tune_path):
     assert elaborate(spec(body.variant()), layout).name.startswith("dmc")
 
 
-def test_spec_player_matches_the_player(tune_path):
-    """Running the spec reproduces the register grid of the transcribed player."""
+def test_player_grid_matches_the_6502(tune_path):
+    """The register grid equals the tune's own 6502 run, and every stream the spec
+    opens parses."""
     song = _song(tune_path)
     subtune = song.start_song - 1
-    got = spec_player(song, subtune, validate=True)
-    want = DmcPlayer(song, subtune)
-    assert got.render_grid(1000) == want.render_grid(1000)
+    got = DmcPlayer(song, subtune, validate=True)
+    assert got.render_grid(1000) == _emu(song, subtune).render_grid(1000)
     assert not list(got.validator.failures())
 
 
@@ -54,7 +54,7 @@ def test_spec_memory_equals_the_6502(tune_path):
     """Outside the stack page the spec leaves the 64 KiB the tune's own code does."""
     song = _song(tune_path)
     subtune = song.start_song - 1
-    got, want = spec_player(song, subtune), _emu(song, subtune)
+    got, want = DmcPlayer(song, subtune), _emu(song, subtune)
     for frame in range(300):
         got.play_frame()
         want.play_frame()
@@ -62,23 +62,23 @@ def test_spec_memory_equals_the_6502(tune_path):
 
 
 @pytest.mark.oracle
-def test_full_length_spec_matches_the_player(tune_path):
-    """Over the whole song the spec and the transcribed player agree, and every
+def test_full_length_grid_matches_the_6502(tune_path):
+    """Over the whole song the grid equals the tune's own 6502 run, and every
     stream the spec opens parses."""
     song = _song(tune_path)
     subtune = song.start_song - 1
     frames = song_frames(tune_path, None)
-    got = spec_player(song, subtune, validate=True)
-    assert got.render_grid(frames) == DmcPlayer(song, subtune).render_grid(frames)
+    got = DmcPlayer(song, subtune, validate=True)
+    assert got.render_grid(frames) == _emu(song, subtune).render_grid(frames)
     assert not list(got.validator.failures())
 
 
 @pytest.mark.oracle
-def test_full_length_spec_memory_equals_the_6502(tune_path):
+def test_full_length_memory_equals_the_6502(tune_path):
     """Every call of the whole song leaves the same memory as the tune's own code."""
     song = _song(tune_path)
     subtune = song.start_song - 1
-    got, want = spec_player(song, subtune), _emu(song, subtune)
+    got, want = DmcPlayer(song, subtune), _emu(song, subtune)
     for frame in range(song_frames(tune_path, None)):
         got.play_frame()
         want.play_frame()
@@ -95,7 +95,7 @@ def test_row_reader_equals_the_6502_for_all_memory(tune_path, voice):
     if song.variant() != "v37":
         pytest.skip("the row reader sits at base+$1a2 in the init-$37 body")
     layout, body, _ = binding(song)
-    view = spec_player(song, song.start_song - 1).view()
+    view = DmcPlayer(song, song.start_song - 1).view()
     result = validate(
         spec(body.variant()),
         layout,

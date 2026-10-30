@@ -4,9 +4,9 @@
 
 DMC (Demo Music Creator) is a C64 music player by Brian/Graffity
 (`-PLAYER (C) BRIAN/GRAFFITY!`). `pydmcsid` loads a DMC tune, locates the
-per-tune tables, and runs a faithful integer transcription of the 6502 play
-routine, exposing the per-frame SID register writes. The player is transcribed
-from the DMC disassembly.
+per-tune tables, and plays the tune: the tune's own init runs on the 6502
+emulator and every play call runs a playspec of the DMC play routine on that
+memory, exposing the per-frame SID register writes.
 
 ## Container and detection notes
 
@@ -32,7 +32,7 @@ reorganised bodies (a different tempo work cell) that only share the DMC
 data-table structure.
 
 Three reorganised bodies dispatched to a non-`$85` play offset are modeled by
-their own transcriptions, each gated by a normalised-body signature disjoint from
+their own specs, each gated by a normalised-body signature disjoint from
 the `$85` anchor so the base engine is provably unaffected:
 
 - `base+$a1` — the V5-era `$a1` engine (own `$17cf..` work-RAM map, two-frame
@@ -44,7 +44,7 @@ the `$85` anchor so the base engine is provably unaffected:
 - the `$947`/`$94a`/`$937` dispatch — the standard init-`$1d` body behind a 2-level
   PSID dispatch (the play entry `JMP`s into the ordinary body at a virtual base
   `load+1` or `load+13`), so it reuses the init-`$1d` engine at the derived base
-  rather than a separate transcription; the `$937` sub-family adds a resident
+  rather than a separate spec; the `$937` sub-family adds a resident
   CIA-multispeed wrapper.
 
 Across HVSC (sidid `DMC` family) it recognises 9902 of 10759 tunes, 9702 of them
@@ -102,32 +102,21 @@ not define as a command (it skips it) is a parse error rather than being accepte
 transpose byte `$a0-$ff` adds `byte - $a0` to each note of the pattern that follows;
 `$80-$9f` subtracts `byte - $80` (`$80` is no transposition).
 
-## Playspec
+## Player and playspec
 
-The play routine is also stated as [`pysidtracker.playspec`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/playspec.md)
+The play routine is stated as [`pysidtracker.playspec`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/playspec.md)
 specs in `src/pydmcsid/specs/`: `dmc.play` (init-`$37`, init-`$1d` and `$94a`
 bodies, selected by layout flags), `dmc_a1.play` (`$a1`) and `dmc_95.play` (`$95`).
-`pydmcsid.spec.spec_player(source, subtune)` binds a spec's `layout` from the
-song's facets and operands and returns a `SpecPlayer`: the tune's own init runs on
+`pydmcsid.spec.binding` binds a spec's `layout` from the song's facets and
+operands.
+
+`DmcPlayer(source, subtune)` — a `Song` or `.sid`/`.prg` bytes — is a
+`pysidtracker.playspec.SpecPlayer`, hence a `MemPlayer`: the tune's own init runs on
 the 6502 emulator, then every play call runs the spec on that memory, trapping the
-resident play body when a wrapper calls it. The streams a spec opens name the
-song grammar, so `spec_player(..., validate=True)` reports malformed ones in
+resident play body when a wrapper calls it (a benign thunk, the `$937` multispeed
+divider, a subtune selector). `DmcPlayer(..., validate=True)` checks every stream
+the spec opens against the song grammar and reports malformed ones in
 `player.validator.failures()`.
-
-The oracle-marked tests check each spec over whole songs: the register grid equals
-`DmcPlayer` and the sidtrace oracle, and all 64 KiB outside the stack page equal the
-tune's own 6502 run after every call. `tv.validate` proves the init-`$37` note-row
-reader (`voice[x].row_note`, the 6502 routine at `base+$1a2`) equal to the code for
-every initial memory.
-
-## Player and playback notes
-
-One class, `DmcPlayer`, derives from `pysidtracker.MemPlayer` and owns the shared
-playback machinery (the 64 KiB memory mount, the post-init snapshot, the diffing
-`play_frame`, `render_grid` / `iter_frames`); each DMC generation is a private
-subclass implementing only its `_setup` (resolve the per-tune table bases from the
-resident code), `_init` and `_frame`. `DmcPlayer(source)` — a `Song` or
-`.sid`/`.prg` bytes — dispatches to the matching generation.
 
 `DmcPlayer(source).render_grid(nframes)` is the per-frame `$D400..$D418` register
 grid (25 registers, forward-filled, pulse-width-high nibble-masked) — the shape
@@ -136,25 +125,31 @@ the sidtrace oracle produces. `iter_register_writes(song, max_frames)` yields on
 shared `py*` register-log convention, via
 `pysidtracker.register_writes_from_player`).
 
-`song.byte_exact()` reports whether the recognised body is one the transcription
-reproduces byte-for-byte: the init-`$37` and the modelled init-`$1d` generations
-(both release variants) and the reorganised `$a1`/`$95`/`$94a` engines, gated out
-only for a build whose play entry is wrapped by something other than a benign
-pass-through (a thunk or transparent multispeed divider that re-enters the
-standard play body is followed), whose AD/SR helper is relocated,
-whose release is patched to an unrecognised routine, or (for the reorganised
-engines) whose header vectors resolve outside the resident player (a
-subtune-selector / multispeed wrapper). `tests/test_corpus.py` validates a
-deterministic HVSC sample against a local `$HVSC` tree, and
-`tests/test_oracle_hvsc.py` (the `oracle` marker, a dedicated CI job) confirms
-`DmcPlayer.render_grid` frame-for-frame against the deterministic `sidplayfp`
-[`sidtrace`](https://github.com/anarkiwi/sidtrace) oracle over a real HVSC
-representative of every generation — init-`$37`/`$1d` (with the code-read scene
-patches), the `$a1`/`$95` engines, the `$94a` 2-level dispatch and its `$937`
-CIA-multispeed wrapper, and a benign play-wrapper build. A small residual of
-per-tune scene micro-patches and CIA-multispeed wrappers pydmcsid does not model
-(e.g. a 2× CIA-reprogrammed play rate) is recognised but diverges from the
-single-speed render, so it is excluded from the byte-exact oracle set.
+The oracle-marked tests check the players over whole songs: the register grid equals
+the tune's own 6502 run and the sidtrace oracle, and all 64 KiB outside the stack
+page equal the tune's own 6502 run after every call. `tv.validate` proves the
+init-`$37` note-row reader (`voice[x].row_note`, the 6502 routine at `base+$1a2`)
+equal to the code for every initial memory.
+
+`song.byte_exact()` reports whether the recognised body is one the specs reproduce
+byte-for-byte against the sidtrace oracle: the init-`$37` and the modelled init-`$1d`
+generations (both release variants) and the reorganised `$a1`/`$95`/`$94a` engines,
+gated out only for a build whose play entry is wrapped by something other than a
+benign pass-through (a thunk or transparent multispeed divider that re-enters the
+standard play body is followed), whose AD/SR helper is relocated, whose release is
+patched to an unrecognised routine, or (for the reorganised engines) whose header
+vectors resolve outside the resident player (a subtune-selector / multispeed
+wrapper). `tests/test_corpus.py` validates a deterministic HVSC sample against a
+local `$HVSC` tree, and `tests/test_oracle_hvsc.py` (the `oracle` marker, a
+dedicated CI job) confirms `DmcPlayer.render_grid` frame-for-frame against the
+deterministic `sidplayfp` [`sidtrace`](https://github.com/anarkiwi/sidtrace)
+oracle over a real HVSC representative of every generation — init-`$37`/`$1d`
+(with the code-read scene patches), the `$a1`/`$95` engines, the `$94a` 2-level
+dispatch and its `$937` CIA-multispeed wrapper, and a benign play-wrapper build.
+A small residual of per-tune scene micro-patches and CIA-multispeed wrappers the
+specs do not state (e.g. a 2× CIA-reprogrammed play rate) is recognised but
+diverges from the single-speed render, so it is excluded from the byte-exact oracle
+set.
 
 ## HVSC oracle survey
 
@@ -162,7 +157,7 @@ single-speed render, so it is excluded from the byte-exact oracle set.
 [`pysidtracker.survey`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/survey.md)
 whole-song comparison against the `sidtrace` oracle (Docker), over every subtune
 of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` is `engine` (the
-`DmcPlayer` class), the song's build variant (`Variant.as_info()`, below) and
+name of the spec the player runs), the song's build variant (`Variant.as_info()`, below) and
 `pysidtracker.cadence.cadence_info`'s `rsid`, play `trigger`, `speed` and
 `dynamic`. A tune without the DMC player signature raises `DmcParseError` (a
 `pysidtracker.SidParseError`), which the survey records as `not_decompiled`.
@@ -200,8 +195,11 @@ its code site matched, `default` where the player falls back, or `inferred`):
 The registered `dmc` pysidtracker format exposes it as `variant` (so
 `pysidtracker variant census` classes tunes by it) and `facet_sites` (the
 `{addr: facet}` labels whydiff / pathdiff put on 6502 edges).
-`scripts/dmc_regress.py` dumps every DMC tune's decode and grid digests under an
-HVSC tree and diffs two dumps, to show a refactor is behaviour-neutral.
+`pysidtracker snapshot build --format dmc` digests every DMC tune's decoded
+model, whole-song render and the format's probes (`byte_exact`, the canonical
+stream text) under a tune tree, and `pysidtracker snapshot diff` shows which tunes
+a refactor changed; `pysidtracker grammar` lists a tune's streams and
+`pysidtracker equiv` compares two tunes' canonical text.
 
 ## Export
 
@@ -222,8 +220,8 @@ work file).
 
 ## References
 
-- DMC (Demo Music Creator) player by Brian/Graffity; transcribed from the DMC
-  disassembly.
+- DMC (Demo Music Creator) player by Brian/Graffity; stated as playspecs from the
+  DMC disassembly.
 - HVSC `DMC` sidid family.
 - [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) — shared
   container/image/detection base.

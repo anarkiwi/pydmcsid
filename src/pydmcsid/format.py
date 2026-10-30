@@ -24,6 +24,10 @@ def _streams(song: Song):
     return song.streams(max(song.start_song - 1, 0))
 
 
+def _canonical(song: Song) -> str:
+    return "\n".join(GRAMMAR.listing(_streams(song)))
+
+
 def dmc_format() -> SidFormat:
     """The DMC :class:`SidFormat` for pysidtracker's format discovery."""
     return SidFormat(
@@ -35,4 +39,6 @@ def dmc_format() -> SidFormat:
         facet_sites=facet_sites,
         grammar=GRAMMAR,
         streams=_streams,
+        canonical=_canonical,
+        probes={"byte_exact": Song.byte_exact},
     )

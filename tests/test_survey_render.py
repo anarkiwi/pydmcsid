@@ -22,7 +22,7 @@ def test_render_matches_player(tune_path):
     assert grid.dtype == np.int16
     np.testing.assert_array_equal(grid, DmcPlayer(data).render_grid(120))
     assert json.loads(json.dumps(info)) == info
-    assert info["engine"] == type(DmcPlayer(data)).__name__
+    assert info["engine"] == DmcPlayer(data).program().name
 
 
 @pytest.mark.parametrize(
@@ -30,12 +30,12 @@ def test_render_matches_player(tune_path):
     [
         (
             "ode",
-            {"engine": "DmcPlayer", "generation": "v37", "wrapper": "none"},
+            {"engine": "dmc", "generation": "v37", "wrapper": "none"},
         ),
         (
             "katusha",
             {
-                "engine": "PlayerA1",
+                "engine": "dmc_a1",
                 "generation": "a1",
                 "release": None,
                 "release.src": "default",
@@ -43,11 +43,11 @@ def test_render_matches_player(tune_path):
                 "release_sr.src": "detected@$16c7",
             },
         ),
-        ("krupa_mix", {"engine": "PlayerV1D", "wrapper": "benign"}),
+        ("krupa_mix", {"engine": "dmc", "wrapper": "benign"}),
         (
             "dude",
             {
-                "engine": "Player937",
+                "engine": "dmc",
                 "generation": "nn",
                 "layout": "nn-dispatch",
                 "wrapper": "multispeed",

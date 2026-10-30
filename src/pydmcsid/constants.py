@@ -128,7 +128,7 @@ PW_MIN_STORE_OP = 0x9D  # STA $1756,X -- terminates the shift chain
 # A genuinely different DMC generation: the play body sits at ``base+$a1`` (the
 # dispatch play-JMP target) with a reorganised work-RAM map and a richer feature
 # set (global filter cutoff sweep, volume fade, per-voice PW/vibrato/slide
-# wavetables).  Recognised + reproduced byte-exact by ``PlayerA1``; gated wholly
+# wavetables).  Recognised + reproduced byte-exact by the ``dmc_a1`` spec; gated wholly
 # separately from the ``base+$85`` body so the v37/v1d engines are unchanged.
 DMC_PLAY_A1_REL = 0xA1  # play-body offset from base for the $a1 engine
 
@@ -203,7 +203,7 @@ FILT_STEP_HI_OP = 0x3ED  # LDA $17D8,Y @ $13EC  (filter sweep step hi)
 # three voices; the SID voice stride is read from the preset table ``$100c,X`` =
 # {0,7,14}.  The filter cutoff-hi is composed once per frame as a global
 # accumulator plus a per-tune base offset (``$d416 = $1019 + $1853``).  Recognised
-# + reproduced byte-exact by ``Player95``; gated wholly separately from the
+# + reproduced byte-exact by the ``dmc_95`` spec; gated wholly separately from the
 # ``$85``/``$a1`` bodies so those engines are unchanged.
 DMC_PLAY_95_REL = 0x95  # play-body offset from base for the $95 engine
 
@@ -252,7 +252,7 @@ N95_DISPATCH_WINDOW = 0x20
 # Following that second JMP and deriving the engine base (real_play-$85) recovers
 # the resident body, which the reader already models (:func:`_play_body_ok`).  So
 # the byte-exact-reproducible members are the init-$1d engine relocated; they are
-# routed to :class:`~pydmcsid.player.PlayerNN` (a thin :class:`PlayerV1D`) at the
+# played by the ``dmc`` spec (the init-$1d body) at the
 # derived base.  The reader gates them wholly separately (variant ``"nn"``) so the
 # $85/$a1/$95 bodies are unaffected: the 2-level follow only fires when the
 # dispatch play target is itself a ``JMP`` (the other generations' play targets are
@@ -292,16 +292,12 @@ NN_VIBRATO_OP = 0x2C  # BIT -- modelled (no-op'd) vibrato-setup store
 # advancing mod 5) is nonzero it runs the standard NON-ROW per-voice tick
 # (``$11f9``: note-trigger / sustain), with NO tempo divider, filter-flag reset or
 # filter-register tail.  Both entries drive the SAME modelled body, so playback
-# reuses :class:`~pydmcsid.player.PlayerV1D`; only the per-frame loop differs.
+# reuses the ``dmc`` spec; the 6502 wrapper supplies the per-frame loop.
 # Recognised as variant ``nn`` (uniform recognition) and reproduced byte-exact by
-# :class:`~pydmcsid.player.Player937`; detected statically (:func:`_nn_wrapper_937`)
+# :class:`~pydmcsid.player.DmcPlayer`; detected statically (:func:`_nn_wrapper_937`)
 # so the 157 resident-dispatch ``nn`` tunes + the other engines never regress.
 NN937_BODY_REL = 0x936  # secondary-dispatch body: LDA flag / BEQ / JSR refresh
 NN937_STEADY_REL = 0x8F0  # per-voice refresh body (masked non-row ticks)
-NN937_FLAG = 0x1926  # _a() arg for the enable flag ($1927): refresh vs full play
-NN937_PHASE = 0x1925  # _a() arg for the phase index ($1926), advances mod 5
-NN937_MASK = (0x1927, 0x192C, 0x1931)  # _a() args: per-voice 5-entry phase masks
-NN937_MOD = 5  # phase modulus (CPY #$05 in the refresh body)
 NN937_WRAP_SCAN = 0x20  # bytes of the appended wrapper to scan for its constants
 NN937_DEC_OP = 0xCE  # the wrapper play opens ``DEC counter`` (the multispeed gate)
 

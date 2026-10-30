@@ -2,40 +2,27 @@
 
 Byte-exact correctness against the sidtrace oracle lives in
 ``test_oracle_hvsc.py`` (Docker, the ``oracle`` marker).  These non-oracle tests
-drive ``DmcPlayer.render_grid`` over a real HVSC representative of every modelled
+drive ``DmcPlayer.render_grid`` over a real HVSC representative of every stated
 generation -- init-``$37``/``$1d``, the ``$a1``/``$95`` engines, and the ``$94a`` /
 ``$937`` families, plus the scene-patched builds -- asserting the grid is the
 MemPlayer 25-register forward-filled shape, is deterministic, and produces real
-output (so the whole play transcription is exercised without an emulator).
+output (so the whole spec is exercised).
 """
 
 from pysidtracker import MemPlayer
+from pysidtracker.playspec import SpecPlayer
 
 import pydmcsid
 from pydmcsid import DmcPlayer
-from pydmcsid.player import (
-    Player95,
-    PlayerA1,
-    PlayerNN,
-    Player937,
-    PlayerV1D,
-    _engine_class,
-)
 from helpers import NREG
 
-_ENGINE = {
-    "v37": DmcPlayer,
-    "v1d": PlayerV1D,
-    "a1": PlayerA1,
-    "n95": Player95,
-    "nn": (PlayerNN, Player937),
-}
+_SPEC = {"v37": "dmc", "v1d": "dmc", "nn": "dmc", "a1": "dmc_a1", "n95": "dmc_95"}
 
 
-def test_dmcplayer_is_memplayer():
-    """The one DMC player class derives from the shared :class:`MemPlayer`."""
+def test_dmcplayer_is_a_spec_player():
+    """The one DMC player class is a :class:`SpecPlayer`, hence a :class:`MemPlayer`."""
+    assert issubclass(DmcPlayer, SpecPlayer)
     assert issubclass(DmcPlayer, MemPlayer)
-    assert MemPlayer in DmcPlayer.__bases__  # the single MemPlayer-derived root
 
 
 def test_is_dmc_and_byte_exact(tune_path):
@@ -45,13 +32,12 @@ def test_is_dmc_and_byte_exact(tune_path):
     assert song.byte_exact()
 
 
-def test_dispatch_matches_variant(tune_path):
-    """``DmcPlayer(source)`` instantiates the engine for the tune's generation."""
+def test_spec_matches_variant(tune_path):
+    """``DmcPlayer(source)`` runs the spec of the tune's body generation."""
     song = pydmcsid.read(tune_path)
     player = DmcPlayer(song)
-    expected = _ENGINE[song.variant()]
-    assert isinstance(player, expected)
-    assert type(player) is _engine_class(song)
+    assert player.program().name == _SPEC[song.variant()]
+    assert player.song.variant() == song.variant()
 
 
 def test_render_grid_shape_and_output(tune_id, tune_path):

@@ -5,7 +5,10 @@ import pytest
 import pydmcsid
 from pydmcsid import DmcPlayer
 from pydmcsid.errors import DmcParseError
+from pysidtracker.playspec import elaborate, run
+
 from pydmcsid.grammar import ENGINES, GRAMMAR, modelled, order_rule, pattern_rule
+from pydmcsid.spec import binding, spec
 
 MODELLED = ("v37", "v1d", "nn")
 
@@ -138,41 +141,57 @@ def test_player_cursors_stay_on_stream_items(tune_path):
     generation = song.variant()
     player = DmcPlayer(song)
     engine = ENGINES[generation]
-    mem = player.m
-    build = player.song.facets()
-    order_name = order_rule(build, generation)
-    a = player._a  # pylint: disable=protected-access
-    lo = getattr(player, engine.pattern_lo)
-    hi = getattr(player, engine.pattern_hi)
+    layout = player.layout
+    rel = player.base - 0x1000
+    order_name = order_rule(player.song.facets(), generation)
     seen = 0
     for _ in range(600):
         player.play_frame()
+        mem = player.memory
         for voice in range(3):
-            order_ptr = mem[a(engine.order_ptr[0]) + voice] | (
-                mem[a(engine.order_ptr[1]) + voice] << 8
-            )
+            lo, hi = (cell + rel + voice for cell in engine.order_ptr)
+            order_ptr = mem[lo] | (mem[hi] << 8)
             order = GRAMMAR.parse_prefix(
                 bytes(mem[order_ptr : order_ptr + 0x100]), order_name
             ).model
-            index = mem[a(engine.order_index) + voice]
+            index = mem[engine.order_index + rel + voice]
             start, item = _entry_start(order, index)
             assert item is not None
             assert index in (start, start + len(item.data) - 1)
-            if item.kind == "ORDER_LOOP" or item.kind == "ORDER_STOP":
+            if item.kind in ("ORDER_LOOP", "ORDER_STOP"):
                 continue
             number = item.data[-1]
-            ptr = mem[lo + number] | (mem[hi + number] << 8)
-            if generation in ("v37", "v1d", "nn"):
-                f8, f9 = player._curpat[voice]  # pylint: disable=protected-access
-                ptr = f8 | f9 << 8
-                if not ptr:
-                    continue
+            ptr = mem[layout[engine.pattern_lo] + number] | (
+                mem[layout[engine.pattern_hi] + number] << 8
+            )
             pattern = GRAMMAR.parse_prefix(
                 bytes(mem[ptr : ptr + 0x100]), engine.pattern
             ).model
-            assert mem[a(engine.pattern_index) + voice] in _boundaries(pattern)
+            assert mem[engine.pattern_index + rel + voice] in _boundaries(pattern)
             seen += 1
     assert seen
+
+
+def _run_routine(song, routine, memory, patch):
+    """``routine`` of the song's spec run once on ``memory`` after ``patch``."""
+    layout, body, _ = binding(song)
+    program = elaborate(spec(body.variant()), layout, routine=routine)
+    mem = bytearray(memory)
+    patch(mem, layout, body.base - 0x1000)
+    run(program, mem)
+    return mem, layout
+
+
+ORDER_AT = 0x0800
+
+
+def _order_list(data):
+    def patch(mem, _layout, rel):
+        mem[ORDER_AT : ORDER_AT + len(data)] = bytes(data)
+        mem[0x1707 + rel], mem[0x170A + rel] = ORDER_AT & 0xFF, ORDER_AT >> 8
+        mem[0x1726 + rel] = len(data) - 1 if data[-1] in (0xFF, 0xFE) else 0
+
+    return patch
 
 
 @pytest.mark.parametrize(
@@ -185,12 +204,9 @@ def test_order_transpose_byte_sets_note_transpose(tune_path, byte, transpose):
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
     player = DmcPlayer(song)
-    mem = player.m
-    assert not any(mem[0x0800:0x0810])
-    mem[0x0800:0x0803] = bytes((byte, 0x00, 0xFE))
-    mem[player._a(0x1726)] = 0  # pylint: disable=protected-access
-    player._orderwalk(0, 0x00, 0x08)  # pylint: disable=protected-access
-    assert mem[player._a(0x172C)] == transpose  # pylint: disable=protected-access
+    patch = _order_list([byte, 0x00, 0xFE])
+    mem, _ = _run_routine(song, "voice[0].orderwalk", player.memory, patch)
+    assert mem[0x172C + player.base - 0x1000] == transpose
 
 
 def test_wavetable_control_steps_position_back(tune_path):
@@ -199,14 +215,15 @@ def test_wavetable_control_steps_position_back(tune_path):
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
     player = DmcPlayer(song)
-    mem = player.m
-    ctrl = player.b_arp_ctrl
-    mem[ctrl + 3], mem[ctrl + 5] = 0x20, 0x92
-    cell = player._a(0x177A)  # pylint: disable=protected-access
-    mem[cell] = 5
-    player._compose_1598(0)  # pylint: disable=protected-access
-    assert mem[cell] == 4
-    assert mem[player._a(0x1780)] == 0x20  # pylint: disable=protected-access
+
+    def patch(mem, layout, rel):
+        mem[layout["arp_ctrl"] + 3], mem[layout["arp_ctrl"] + 5] = 0x20, 0x92
+        mem[0x177A + rel] = 5
+
+    mem, _ = _run_routine(song, "voice[0].compose", player.memory, patch)
+    rel = player.base - 0x1000
+    assert mem[0x177A + rel] == 4
+    assert mem[0x1780 + rel] == 0x20
 
 
 def test_order_loop_target_follows_the_build(tune_path):
@@ -217,7 +234,10 @@ def test_order_loop_target_follows_the_build(tune_path):
         pytest.skip("covered on the v37/v1d bodies")
     player = DmcPlayer(song)
     jump = order_rule(player.song.facets(), song.variant()) == "order_jump"
-    mem = player.m
-    mem[0x0800:0x0803] = bytes((0xFF, 0x07, 0x00))
-    result = player._order_loop(0x00, 0x08, 0)  # pylint: disable=protected-access
-    assert result == (0x07 if jump else 0)
+    ordered = [0x00, 0x01, 0xFF, 0x01] if jump else [0x00, 0x01, 0xFF]
+    mem, layout = _run_routine(
+        song, "voice[0].orderwalk", player.memory, _order_list(ordered)
+    )
+    number = 1 if jump else 0
+    pointer = mem[layout["patlo"] + number] | (mem[layout["pathi"] + number] << 8)
+    assert mem[layout["zp"]] | (mem[layout["zp"] + 1] << 8) == pointer
