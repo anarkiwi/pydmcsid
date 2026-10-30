@@ -1,0 +1,57 @@
+// DMC song streams, as the play routine reads them (one latin-1 character per byte).
+//
+// Start rules, one per stream kind and engine:
+//   order / order_jump   order list; the $ff loop handler either resets the order
+//                        index (order) or reads a target index (order_jump)
+//   pattern37            pattern stream of the init-$37 body
+//   pattern1d            pattern stream of the init-$1d body (and the $94a family)
+//   instrument           one stride-11 instrument record
+//
+// Bytes stored after a terminator are never read through that stream's pointer.
+
+%import bytes (BYTE, _TAIL)
+
+// Order list: pattern numbers, each optionally preceded by a transpose byte, then
+// a stop ($fe) or a loop ($ff).
+order: order_item* (ORDER_STOP | ORDER_LOOP) _TAIL?
+order_jump: order_item* (ORDER_STOP | order_jump_loop) _TAIL?
+order_jump_loop: ORDER_LOOP BYTE
+order_item: ORDER_PATTERN | ORDER_TRANSPOSE BYTE
+
+ORDER_PATTERN: /[\x00-\x7f]/
+ORDER_TRANSPOSE: /[\x80-\xfd]/
+ORDER_STOP: /[\xfe]/
+ORDER_LOOP: /[\xff]/
+
+// Pattern: rows, each preceded by any instrument/duration (and, in the init-$1d
+// body, legato/volume) prefixes, then the end marker. The end marker is only
+// recognised straight after a row.
+pattern37: (prefix37* row37)+ END37 _TAIL?
+prefix37: INST37 | DUR37
+row37: NOTE37 | REST37 | TIE37 | SLIDE_NOTE37 BYTE BYTE | SLIDE_REST37 BYTE
+
+NOTE37: /[\x00-\x5f]/
+INST37: /[\x60-\x7f]/
+DUR37: /[\x80-\xbf]/
+SLIDE_NOTE37: /[\xc0-\xcf\xe0-\xef]/
+SLIDE_REST37: /[\xd0-\xdf\xf0-\xfc]/
+TIE37: /[\xfd]/
+REST37: /[\xfe]/
+END37: /[\xff]/
+
+pattern1d: (prefix1d* row1d)+ END1D _TAIL?
+prefix1d: INST1D | DUR1D | LEGATO1D | VOLUME1D
+row1d: NOTE1D | REST1D | TIE1D | SLIDE_NOTE1D BYTE BYTE | SLIDE_REST1D BYTE
+
+NOTE1D: /[\x00-\x5f]/
+INST1D: /[\x60-\x7b]/
+LEGATO1D: /[\x7c]/
+TIE1D: /[\x7d]/
+REST1D: /[\x7e]/
+END1D: /[\x7f]/
+DUR1D: /[\x80-\xbf]/
+SLIDE_NOTE1D: /[\xc0-\xcf\xe0-\xef]/
+SLIDE_REST1D: /[\xd0-\xdf]/
+VOLUME1D: /[\xf0-\xff]/
+
+instrument: BYTE~11 _TAIL?

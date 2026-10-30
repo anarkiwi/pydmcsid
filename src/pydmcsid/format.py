@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pysidtracker import SidFormat
 
+from pydmcsid.grammar import GRAMMAR
 from pydmcsid.player import DmcPlayer
 from pydmcsid.reader import DmcSidParser, Song
 from pydmcsid.variant import facet_sites
@@ -17,6 +18,10 @@ from pydmcsid.variant import facet_sites
 def _metadata(song: Song):
     released = song.header.released if song.header is not None else ""
     return (song.name, song.author, released, song.load, song.init, song.play)
+
+
+def _streams(song: Song):
+    return song.streams(max(song.start_song - 1, 0))
 
 
 def dmc_format() -> SidFormat:
@@ -28,4 +33,6 @@ def dmc_format() -> SidFormat:
         metadata=_metadata,
         variant=Song.facets,
         facet_sites=facet_sites,
+        grammar=GRAMMAR,
+        streams=_streams,
     )

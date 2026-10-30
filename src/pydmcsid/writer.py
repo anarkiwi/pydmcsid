@@ -1,11 +1,14 @@
-"""Export a loaded :class:`~pydmcsid.reader.Song` back to a loadable file.
+"""Export a loaded :class:`~pydmcsid.reader.Song` back to a ``.prg`` / ``.sid`` file.
 
-The DMC editor's *packed* on-disk form is the resident player with the per-tune
-tables packed in behind it (``init`` at the JMP-table base, ``play`` at
-``base+3``) -- exactly the image :func:`pydmcsid.read` parses.  Both the DMC4
-editor and the modern cross-platform DMC editor import a bare ``.prg`` (or
-``.sid``) and depack it on load, so re-emitting that image round-trips a tune
-back into an editor.
+The exported image is the resident player with the per-tune tables packed in
+behind it (``init`` at the JMP-table base, ``play`` at ``base+3``) -- exactly the
+image :func:`pydmcsid.read` parses, reproduced byte-for-byte.  A DMC V1-V4/V7.0
+editor save is that same image written from ``$1000``, so :func:`to_prg` round-trips
+those saves unchanged.  The C64 editors load with a plain KERNAL ``LOAD`` forced to
+``$1000`` and never read a ``.sid``, so the output is editor-loadable only for an
+``init-$37``/``init-$1d`` build whose load address and base are both ``$1000``
+(no stub); other bases, and the ``a1``/``n95``/``nn`` engines, play from the file
+but have no editor form.
 
 :func:`to_prg` emits the bare ``.prg`` (2-byte little-endian load address + the
 resident image); :func:`to_sid` wraps it in a PSID/RSID container; :func:`write`
@@ -32,9 +35,9 @@ def image_bytes(song: Song) -> bytes:
 def to_prg(song: Song) -> bytes:
     """Serialize ``song`` to a bare ``.prg`` (LE load address + resident image).
 
-    This is the packed player+data the DMC editor loads: ``load`` addresses the
-    JMP-table base (or a relocation stub ahead of it), ``init`` runs at that base
-    with the accumulator set to the subtune and ``play`` at ``base+3``.
+    This is the packed player+data image: ``load`` addresses the JMP-table base (or
+    a relocation stub ahead of it), ``init`` runs at that base with the accumulator
+    set to the subtune and ``play`` at ``base+3``.
     """
     load = song.load & 0xFFFF
     return bytes((load & 0xFF, load >> 8)) + image_bytes(song)

@@ -304,3 +304,6 @@ NN937_MASK = (0x1927, 0x192C, 0x1931)  # _a() args: per-voice 5-entry phase mask
 NN937_MOD = 5  # phase modulus (CPY #$05 in the refresh body)
 NN937_WRAP_SCAN = 0x20  # bytes of the appended wrapper to scan for its constants
 NN937_DEC_OP = 0xCE  # the wrapper play opens ``DEC counter`` (the multispeed gate)
+
+ORDER_PTR_LO = 0x1707  # per-voice order-list pointer low cells (authored address)
+ORDER_PTR_HI = 0x170A  # per-voice order-list pointer high cells
