@@ -102,6 +102,24 @@ not define as a command (it skips it) is a parse error rather than being accepte
 transpose byte `$a0-$ff` adds `byte - $a0` to each note of the pattern that follows;
 `$80-$9f` subtracts `byte - $80` (`$80` is no transposition).
 
+## Playspec
+
+The play routine is also stated as [`pysidtracker.playspec`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/playspec.md)
+specs in `src/pydmcsid/specs/`: `dmc.play` (init-`$37`, init-`$1d` and `$94a`
+bodies, selected by layout flags), `dmc_a1.play` (`$a1`) and `dmc_95.play` (`$95`).
+`pydmcsid.spec.spec_player(source, subtune)` binds a spec's `layout` from the
+song's facets and operands and returns a `SpecPlayer`: the tune's own init runs on
+the 6502 emulator, then every play call runs the spec on that memory, trapping the
+resident play body when a wrapper calls it. The streams a spec opens name the
+song grammar, so `spec_player(..., validate=True)` reports malformed ones in
+`player.validator.failures()`.
+
+The oracle-marked tests check each spec over whole songs: the register grid equals
+`DmcPlayer` and the sidtrace oracle, and all 64 KiB outside the stack page equal the
+tune's own 6502 run after every call. `tv.validate` proves the init-`$37` note-row
+reader (`voice[x].row_note`, the 6502 routine at `base+$1a2`) equal to the code for
+every initial memory.
+
 ## Player and playback notes
 
 One class, `DmcPlayer`, derives from `pysidtracker.MemPlayer` and owns the shared
