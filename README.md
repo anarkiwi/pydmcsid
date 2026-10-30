@@ -35,7 +35,7 @@ pydmcsid.write(song, "out.prg")        # export the packed player+data image
 pydmcsid.write(song, "out.sid")        # ...or a PSID/RSID container
 ```
 
-`DmcPlayer` is a single [`pysidtracker.MemPlayer`](https://github.com/anarkiwi/pysidtracker)
+`DmcPlayer` is a [`pysidtracker` playspec player](https://github.com/anarkiwi/pysidtracker)
 covering every DMC generation; `render_grid(n)` returns the forward-filled 25-register
 grid. `iter_register_writes` follows the shared `py*` register-log convention: one
 `RegWrite(clock, reg, val)` per SID write, frames `cycles_per_frame` apart.

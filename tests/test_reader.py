@@ -524,8 +524,8 @@ def _nn937_image(reload=6, seed=1):
 
 
 def test_nn937_wrapper_recognised_byte_exact():
-    """A synthetic $937 wrapper is variant "nn", byte-exact, and routes to Player937."""
-    from pydmcsid.player import Player937, _player_for
+    """A synthetic $937 wrapper is variant "nn", byte-exact, and its divider
+    period and seed are read from the wrapper code."""
     from pydmcsid.reader import Song, _nn_wrapper_937, dmc_byte_exact
 
     mem, play, init = _nn937_image()
@@ -542,56 +542,35 @@ def test_nn937_wrapper_recognised_byte_exact():
         init=init,
     )
     assert song.variant() == "nn"
-    player = _player_for(song, 0)
-    assert isinstance(player, Player937)
-    assert player._reload == 6 and player._ms == 1  # read from the wrapper code
+    assert song.facets()["ms_reload"] == 6 and song.facets()["ms_seed"] == 1
 
 
 def test_nn937_wrapper_immediates_read_from_code():
-    """Player937 reads the divider period + seed from the wrapper, not assumes them."""
-    from pydmcsid.player import Player937
+    """The divider period and seed come from the wrapper, not an assumed value."""
     from pydmcsid.reader import Song
 
-    mem, play, init = _nn937_image(reload=3, seed=2)
-    song = Song(
-        mem=mem,
-        load=0x1000,
-        base=0x1001,
-        image_len=0x1420,
-        songs=1,
-        start_song=1,
-        play=play,
-        init=init,
-    )
-    player = Player937(song, 0)
-    assert player._reload == 3 and player._ms == 2
-    for _ in range(12):  # a handful of wrapper calls: main + refresh, no crash
-        for reg, val in player.play_frame():
-            assert 0 <= reg < 25 and 0 <= val <= 0xFF
+    def song_of(mem, play, init):
+        return Song(
+            mem=mem,
+            load=0x1000,
+            base=0x1001,
+            image_len=0x1420,
+            songs=1,
+            start_song=1,
+            play=play,
+            init=init,
+        )
 
-    # Enable flag cleared: every intermediate wrapper call falls back to the full
-    # resident play (the reorganised refresh body is a no-op for that build).
-    mem[0x1927] = 0x00
-    disabled = Player937(song, 0)
-    for _ in range(4):
-        disabled.play_frame()
+    mem, play, init = _nn937_image(reload=3, seed=2)
+    build = song_of(mem, play, init).facets()
+    assert build["ms_reload"] == 3 and build["ms_seed"] == 2
 
     # No ``LDX #imm : STX counter`` in the wrapper -> the seed/reload fall back to 1.
     stripped = bytearray(mem)
     stripped[0x2403:0x2408] = b"\xea" * 5  # blank the init LDX/STX
     stripped[0x2414:0x2420] = b"\xea" * 12  # blank the play LDX/STX
-    song2 = Song(
-        mem=stripped,
-        load=0x1000,
-        base=0x1001,
-        image_len=0x1420,
-        songs=1,
-        start_song=1,
-        play=play,
-        init=init,
-    )
-    fallback = Player937(song2, 0)
-    assert fallback._reload == 1 and fallback._ms == 1
+    build = song_of(stripped, play, init).facets()
+    assert build["ms_reload"] == 1 and build["ms_seed"] == 1
 
 
 def test_nn937_detector_disjoint_from_resident_nn():
@@ -601,7 +580,7 @@ def test_nn937_detector_disjoint_from_resident_nn():
     mem = bytearray(0x10000)
     mem[0x1000 : 0x1000 + 0x960] = _nn_body()  # no secondary body / no wrapper
     assert not _nn_wrapper_937(mem, 0x1001, play=0x1003, init=0x1000)
-    # resident vectors -> byte-exact via PlayerNN, not the wrapper path
+    # resident vectors -> byte-exact as a resident $94a body, not the wrapper path
     assert pydmcsid.reader.dmc_byte_exact(mem, 0x1001, play=0x1003, init=0x1000)
 
 

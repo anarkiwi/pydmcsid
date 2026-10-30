@@ -1,9 +1,10 @@
 """The DMC playroutine as :mod:`pysidtracker.playspec` specs, bound to a build.
 
-``specs/dmc.play`` states the init-``$37``, init-``$1d`` and ``$94a`` bodies and
-``specs/dmc_a1.play`` and ``specs/dmc_95.play`` the ``$a1`` and ``$95`` engines; this module binds each spec's ``layout``
-from the song's :mod:`~pydmcsid.variant` facets and the player-code operands, and
-wires a :class:`~pysidtracker.playspec.SpecPlayer`.
+``specs/dmc.play`` states the init-``$37``, init-``$1d`` and ``$94a`` bodies,
+``specs/dmc_a1.play`` the ``$a1`` engine and ``specs/dmc_95.play`` the ``$95``
+engine; this module binds each spec's ``layout`` from the song's
+:mod:`~pydmcsid.variant` facets and the player-code operands, and
+:class:`~pydmcsid.player.DmcPlayer` runs them.
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any, Dict, Iterator, Tuple
 
-from pysidtracker.playspec import SpecPlayer, parse as parse_spec
+from pysidtracker.playspec import parse as parse_spec
 
 from pydmcsid import constants
 from pydmcsid.errors import DmcFormatError
-from pydmcsid.reader import Song, _operand, _play_body_ok, parse, wrapper_body
+from pydmcsid.reader import Song, _operand, _play_body_ok, wrapper_body
 
 SPEC_FILES = {
     "v37": "dmc.play",
@@ -176,7 +177,7 @@ def binding(song: Song, subtune: int = 0) -> Tuple[Dict[str, Any], Song, int]:
     return _binding85(song, generation in V1D_BODIES), song, subtune
 
 
-def _body_entries(song: Song) -> Iterator[int]:
+def body_entries(song: Song) -> Iterator[int]:
     """The addresses a play call can enter the resident play body at."""
     mem, base = song.mem, song.base
     jump = (mem[base + 4] | (mem[base + 5] << 8)) & 0xFFFF
@@ -188,23 +189,3 @@ def _body_entries(song: Song) -> Iterator[int]:
     for entry in ((base + constants.DMC_PLAY_BODY_REL) & 0xFFFF, jump):
         if _play_body_ok(mem, entry, base):
             yield entry
-
-
-def spec_player(source, subtune: int = 0, validate: bool = False) -> SpecPlayer:
-    """The :class:`~pysidtracker.playspec.SpecPlayer` of ``source`` (a
-    :class:`~pydmcsid.reader.Song` or ``.sid``/``.prg`` bytes)."""
-    song = source if isinstance(source, Song) else parse(bytes(source))
-    layout, body, _ = binding(song, subtune)
-    entries = frozenset(_body_entries(body))
-    image = bytes(song.mem[song.load : song.load + song.image_len])
-    return SpecPlayer(
-        spec(body.variant()),
-        image,
-        song.load,
-        song.init,
-        song.play,
-        subtune,
-        bind=lambda view, at: layout,
-        entries=lambda view: entries,
-        validate=validate,
-    )
