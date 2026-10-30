@@ -15,7 +15,7 @@ from pydmcsid.reader import (
 from pydmcsid.reglog import RegWrite, iter_register_writes
 from pydmcsid.writer import image_bytes, to_prg, to_sid, write
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     "DmcError",
