@@ -185,11 +185,11 @@ def _run_routine(song, routine, memory, patch):
 ORDER_AT = 0x0800
 
 
-def _order_list(data):
+def _order_list(data, index=0):
     def patch(mem, _layout, rel):
         mem[ORDER_AT : ORDER_AT + len(data)] = bytes(data)
         mem[0x1707 + rel], mem[0x170A + rel] = ORDER_AT & 0xFF, ORDER_AT >> 8
-        mem[0x1726 + rel] = len(data) - 1 if data[-1] in (0xFF, 0xFE) else 0
+        mem[0x1726 + rel] = index
 
     return patch
 
@@ -236,7 +236,7 @@ def test_order_loop_target_follows_the_build(tune_path):
     jump = order_rule(player.song.facets(), song.variant()) == "order_jump"
     ordered = [0x00, 0x01, 0xFF, 0x01] if jump else [0x00, 0x01, 0xFF]
     mem, layout = _run_routine(
-        song, "voice[0].orderwalk", player.memory, _order_list(ordered)
+        song, "voice[0].orderwalk", player.memory, _order_list(ordered, 2)
     )
     number = 1 if jump else 0
     pointer = mem[layout["patlo"] + number] | (mem[layout["pathi"] + number] << 8)
