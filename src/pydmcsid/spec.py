@@ -135,6 +135,7 @@ def _binding_a1(song: Song) -> Dict[str, Any]:
         "filtb": operand(constants.A1_FILT_B_OP),
         "freqlo": (song.base + constants.A1_FREQ_LO_REL) & 0xFFFF,
         "freqhi": (song.base + constants.A1_FREQ_HI_REL) & 0xFFFF,
+        "zp": operand(constants.A1_ZP_OP) & 0xFF,
         "rel_clears_sr": int(song.facets()["release_sr"] == "clear"),
     }
 
@@ -157,6 +158,7 @@ def _binding95(song: Song) -> Dict[str, Any]:
         "filtb": operand(constants.N95_FILT_B_OP),
         "freqlo": (song.base + constants.N95_FREQ_LO_REL) & 0xFFFF,
         "freqhi": (song.base + constants.N95_FREQ_HI_REL) & 0xFFFF,
+        "zp": operand(constants.N95_ZP_OP) & 0xFF,
     }
 
 

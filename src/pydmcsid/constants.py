@@ -308,3 +308,5 @@ V1D_SR_TMP_OP = 0x84C  # STA <sr scratch> @ $184b (init-$1d sustain-override hel
 ORDER_READ_ZP_OP = (
     0xD6  # LDA (<ptr>),Y @ base+$d5 (the zero-page order/pattern pointer)
 )
+A1_ZP_OP = 0x100  # LDA (<ptr>),Y @ base+$ff (the $a1 zero-page order/pattern pointer)
+N95_ZP_OP = 0xFC  # LDA (<ptr>),Y @ base+$fb (the $95 zero-page order/pattern pointer)

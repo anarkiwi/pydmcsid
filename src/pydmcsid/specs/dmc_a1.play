@@ -2,7 +2,7 @@ spec dmc_a1;
 
 layout {
   base, sid, patlo, pathi, inst, wtctrl, wtarg, pwa, pwb, filta, filtb: addr;
-  freqlo, freqhi: addr;
+  freqlo, freqhi, zp: addr;
   rel_clears_sr: flag;
 }
 
@@ -19,6 +19,8 @@ cell filt_b: u8[0x100] @ L.filtb ro;
 cell freq_lo: u8[0x100] @ L.freqlo ro;
 cell freq_hi: u8[0x100] @ L.freqhi ro;
 
+cell zp_lo: u8 @ L.zp scratch;
+cell zp_hi: u8 @ L.zp + 1 scratch;
 cell voice_on: u8[3] @ L.base + 0x006;
 cell sid_off: u8[3] @ L.base + 0x009;
 cell note: u8[3] @ L.base + 0x00f;
@@ -197,6 +199,10 @@ machine voice[x in 0..3] {
     note[x] := v + transpose[x];
     if tie[x] != 0 { pat_end_tail(p); return; }
     note_onset(p);
+  }
+
+  proc row_onset() {
+    note_onset(word(zp_lo, zp_hi));
   }
 
   proc note_onset(p: u16) {

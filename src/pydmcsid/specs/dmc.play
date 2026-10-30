@@ -225,6 +225,14 @@ machine voice[x in 0..3] {
       pat_cursor[x] += 1;
       if legato[x] != 0 { endcheck(p); rest_tail(); return; }
     }
+    note_onset(p);
+  }
+
+  proc row_onset() {
+    note_onset(word(zp_lo, zp_hi));
+  }
+
+  proc note_onset(p: u16) {
     f1735[x] := 0; f1738[x] := 0; f1768[x] := 0; f176b[x] := 0; f176e[x] := 0;
     f1798[x] := 0; f179b[x] := 0;
     if !L.v1d {
