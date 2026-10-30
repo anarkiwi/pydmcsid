@@ -85,26 +85,39 @@ def test_full_length_memory_equals_the_6502(tune_path):
         assert _equal_outside_stack(got.memory, bytes(want._mem)), frame
 
 
+# Loop-free routines the prover can take, as ``(spec routine, offset in the body)``:
+# the note-row reader of init-$37, the note-onset tail of init-$1d (the legato
+# branch before it leads into the unbounded steady tick), the $a1 and $95
+# wavetable-and-output chain and the $95 note onset. The $a1 note onset saves
+# AD/SR with PHA/PLA, so a pattern pointer into the stack page makes the prover
+# read the pushed bytes the spec does not model; it is left out.
+PROVEN = {
+    "v37": (("row_note", 0x1A2),),
+    "v1d": (("row_onset", 0x1C4),),
+    "nn": (("row_onset", 0x1C4),),
+    "a1": (("wt_output", 0x65B),),
+    "n95": (("row_onset", 0x323), ("wt_output", 0x654)),
+}
+
+
 @pytest.mark.oracle
 @pytest.mark.parametrize("voice", [0, 1, 2])
-def test_row_reader_equals_the_6502_for_all_memory(tune_path, voice):
-    """The spec's note-row reader equals the tune's 6502 routine at ``base+$1a2``
-    (note + transpose, frequency lookup, onset write, end-of-pattern peek) for every
-    initial memory."""
+def test_routines_equal_the_6502_for_all_memory(tune_path, voice):
+    """Each proven spec routine equals the tune's 6502 routine at its offset in the
+    body for every initial memory (`tv.validate`)."""
     song = _song(tune_path)
-    if song.variant() != "v37":
-        pytest.skip("the row reader sits at base+$1a2 in the init-$37 body")
     layout, body, _ = binding(song)
     view = DmcPlayer(song, song.start_song - 1).view()
-    result = validate(
-        spec(body.variant()),
-        layout,
-        f"voice[{voice}].row_note",
-        view,
-        body.base + 0x1A2,
-        registers={"X": voice},
-    )
-    assert result.proven, result.counterexample
+    for routine, offset in PROVEN[body.variant()]:
+        result = validate(
+            spec(body.variant()),
+            layout,
+            f"voice[{voice}].{routine}",
+            view,
+            body.base + offset,
+            registers={"X": voice},
+        )
+        assert result.proven, (routine, result.counterexample)
 
 
 def test_supported_generations():
