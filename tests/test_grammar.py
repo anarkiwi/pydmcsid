@@ -241,3 +241,28 @@ def test_order_loop_target_follows_the_build(tune_path):
     number = 1 if jump else 0
     pointer = mem[layout["patlo"] + number] | (mem[layout["pathi"] + number] << 8)
     assert mem[layout["zp"]] | (mem[layout["zp"] + 1] << 8) == pointer
+
+
+def _corrupt(song):
+    """``song`` with voice 0's order list pointing at bytes that never terminate."""
+    song.mem[0x0400:0x0500] = bytes(0x100)
+    for subtune in {0, song.start_song - 1}:
+        table = song.facets()["order_table"] + (subtune << 3)
+        song.mem[table], song.mem[table + 1] = 0x00, 0x04
+    return song
+
+
+def test_strict_parse_rejects_a_malformed_stream(tune_path):
+    """A malformed stream is a parse error under ``strict`` and plays otherwise."""
+    song = pydmcsid.read(tune_path)
+    data = pydmcsid.to_prg(_corrupt(song))
+    assert pydmcsid.parse(data).variant() == song.variant()
+    with pytest.raises(DmcParseError, match="voice 0 order list"):
+        pydmcsid.parse(data, strict=True)
+    with pytest.raises(DmcParseError, match="voice 0 order list"):
+        DmcPlayer(song, song.start_song - 1, strict=True)
+
+
+def test_strict_parse_accepts_the_start_subtune(tune_path):
+    """Every cached tune's start subtune validates."""
+    assert pydmcsid.read(tune_path, strict=True).variant()

@@ -20,6 +20,7 @@ the jennings oracle in the tests).
 from pathlib import Path
 from typing import Optional
 
+from pysidtracker.image import load_prefix
 from pysidtracker.header import PSID_MAGIC, RSID_MAGIC, write_psid
 
 from pydmcsid.reader import Song
@@ -39,8 +40,7 @@ def to_prg(song: Song) -> bytes:
     a relocation stub ahead of it), ``init`` runs at that base with the accumulator
     set to the subtune and ``play`` at ``base+3``.
     """
-    load = song.load & 0xFFFF
-    return bytes((load & 0xFF, load >> 8)) + image_bytes(song)
+    return load_prefix(song.load) + image_bytes(song)
 
 
 def to_sid(song: Song, container: Optional[bytes] = None) -> bytes:

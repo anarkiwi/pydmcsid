@@ -18,11 +18,17 @@ class DmcPlayer(SpecPlayer):
 
     ``render_grid(n)`` is the per-frame ``$D400..$D418`` register grid (25 registers,
     forward-filled, pulse-width-high nibble-masked); ``validate`` checks every
-    stream the spec opens against the song grammar (``self.validator.failures()``).
+    stream the spec opens against the song grammar (``self.validator.failures()``);
+    ``strict`` raises :class:`~pydmcsid.errors.DmcParseError` up front when a stream
+    ``subtune``'s voices reach does not parse.
     """
 
-    def __init__(self, source, subtune: int = 0, validate: bool = False):
+    def __init__(
+        self, source, subtune: int = 0, validate: bool = False, strict: bool = False
+    ):
         song = source if isinstance(source, Song) else parse(bytes(source))
+        if strict:
+            song.streams(subtune)
         layout, body, _ = binding(song, subtune)
         entries = frozenset(body_entries(body))
         self.song = body

@@ -14,6 +14,7 @@ from typing import Iterator, List, Set, Tuple
 
 from lark import Token, Transformer
 from pysidtracker.bytegrammar import ByteGrammar, Parsed
+from pysidtracker.image import SidImage, require_ram
 
 from pydmcsid import constants
 from pydmcsid.errors import DmcParseError
@@ -253,18 +254,6 @@ def instrument_numbers(stream: Stream) -> Set[int]:
     return {number for number in found if number is not None}
 
 
-def _word(mem, lo: int, hi: int, index: int) -> int:
-    return mem[(lo + index) & 0xFFFF] | (mem[(hi + index) & 0xFFFF] << 8)
-
-
-def _read(mem, addr: int, rule: str, what: str) -> Parsed:
-    window = bytes(mem[addr : addr + 0x100])
-    try:
-        return GRAMMAR.parse_prefix(window, rule)
-    except DmcParseError as exc:
-        raise DmcParseError(f"{what} at {addr:#06x}: {exc}") from exc
-
-
 def song_streams(song, subtune: int = 0) -> Iterator[Tuple[str, Stream, str]]:
     """``(name, stream, rule)`` for every stream ``subtune``'s voices reach.
 
@@ -280,27 +269,37 @@ def song_streams(song, subtune: int = 0) -> Iterator[Tuple[str, Stream, str]]:
     if not modelled(song.variant()):
         return
     layout, body, subtune = binding(song, subtune)
-    generation = body.variant()
-    engine = ENGINES[generation]
-    mem = bytes(body.mem)
+    engine = ENGINES[body.variant()]
+    image = SidImage(body.mem, body.load, body.load + body.image_len, None, b"", b"")
     build = body.facets()
-    order_name = order_rule(build, generation)
+    order_name = order_rule(build, body.variant())
     table = build["order_table"] + ((subtune << 3) & 0xFF)
     patterns: Set[int] = set()
     instruments: Set[int] = set()
     for voice in range(VOICES):
-        ptr = mem[table + 2 * voice] | (mem[table + 2 * voice + 1] << 8)
-        order = _read(mem, ptr, order_name, f"voice {voice} order list")
+        ptr = image.ptr(table + 2 * voice, table + 2 * voice + 1, 0)
+        order = _stream(image, ptr, order_name, f"voice {voice} order list")
         yield f"voice{voice}.order", order.model, order_name
         patterns.update(order.model.numbers(*_ORDER_KINDS))
     for number in sorted(patterns):
-        addr = _word(mem, layout[engine.pattern_lo], layout[engine.pattern_hi], number)
-        parsed = _read(mem, addr, engine.pattern, f"pattern {number}")
+        parsed = GRAMMAR.entry(
+            image,
+            layout[engine.pattern_lo],
+            layout[engine.pattern_hi],
+            number,
+            engine.pattern,
+            f"pattern {number}",
+        )
         yield f"pattern{number}", parsed.model, engine.pattern
         instruments.update(instrument_numbers(parsed.model))
     for number in sorted(instruments):
         addr = (
             layout[engine.instrument_base] + number * engine.instrument_size
         ) & 0xFFFF
-        record = _read(mem, addr, engine.instrument, f"instrument {number}")
+        record = _stream(image, addr, engine.instrument, f"instrument {number}")
         yield f"instrument{number}", record.model, engine.instrument
+
+
+def _stream(image: SidImage, addr: int, rule: str, what: str) -> Parsed:
+    require_ram(addr, 1, what, DmcParseError)
+    return GRAMMAR.read(image, addr, rule, what)
