@@ -5,7 +5,7 @@ import pytest
 import pydmcsid
 from pydmcsid import DmcPlayer
 from pydmcsid.errors import DmcParseError
-from pydmcsid.grammar import GRAMMAR, modelled, order_rule, pattern_rule
+from pydmcsid.grammar import ENGINES, GRAMMAR, modelled, order_rule, pattern_rule
 
 MODELLED = ("v37", "v1d", "nn")
 
@@ -77,13 +77,27 @@ def test_pattern1d_prefixes():
     ]
 
 
-def test_modelled_generations():
-    """The grammar covers the init-$37/$1d bodies and the $94a family."""
-    assert [g for g in ("v37", "v1d", "a1", "n95", "nn") if modelled(g)] == [
-        "v37",
-        "v1d",
-        "nn",
+def test_a1_and_95_patterns_differ_in_their_commands():
+    """``$f0``/``$ef`` take an operand only in the $95 engine."""
+    assert _kinds("pattern95", b"\xf0\x12\x30\xff") == ["PARAM_95", "NOTE_X", "END_X"]
+    with pytest.raises(DmcParseError):
+        GRAMMAR.parse_exact(b"\xf0\x12\x30\xff", "pattern_a1")
+
+
+def test_x_order_transpose_carries_a_value_then_the_pattern():
+    """The $a1/$95 transpose commands ($fd, $fc) carry a value, then a pattern."""
+    assert _kinds("order_x", b"\xfd\x05\x01\xfc\x02\x03\xfe") == [
+        "ORDER_TRANSPOSE",
+        "ORDER_TRANSPOSE",
+        "ORDER_STOP",
     ]
+    assert GRAMMAR.parse_prefix(b"\x01\xff\x00\x09", "order_x").size == 3
+
+
+def test_every_generation_is_modelled():
+    """All five body generations have a grammar."""
+    assert all(modelled(g) for g in ("v37", "v1d", "a1", "n95", "nn"))
+    assert not modelled(None)
 
 
 def test_streams_of_a_real_tune_round_trip(tune_path):
@@ -94,9 +108,9 @@ def test_streams_of_a_real_tune_round_trip(tune_path):
         assert not streams
         return
     kinds = {rule for _, _, rule in streams}
-    assert order_rule(song.facets()) in kinds
+    assert order_rule(song.facets(), song.variant()) in kinds
     assert pattern_rule(song.variant()) in kinds
-    assert "instrument" in kinds
+    assert ENGINES[song.variant()].instrument in kinds
     GRAMMAR.check(streams, DmcParseError)
 
 
@@ -109,39 +123,54 @@ def _boundaries(stream):
     return starts
 
 
+def _entry_start(order, index):
+    """The item of ``order`` holding byte ``index`` as ``(start, item)``."""
+    for start, item in zip(_boundaries(order), order.items):
+        if start <= index < start + len(item.data):
+            return start, item
+    return None, None
+
+
 def test_player_cursors_stay_on_stream_items(tune_path):
     """The player's order and pattern cursors only ever sit where the grammar
     says an item starts (or, for a transposed order entry, at its pattern byte)."""
     song = pydmcsid.read(tune_path)
-    if not modelled(song.variant()):
-        pytest.skip("no grammar for this generation")
+    generation = song.variant()
     player = DmcPlayer(song)
+    engine = ENGINES[generation]
     mem = player.m
     build = player.song.facets()
-    pat_rule = pattern_rule(player.song.variant())
+    order_name = order_rule(build, generation)
+    a = player._a  # pylint: disable=protected-access
+    lo = getattr(player, engine.pattern_lo)
+    hi = getattr(player, engine.pattern_hi)
     seen = 0
     for _ in range(600):
         player.play_frame()
         for voice in range(3):
-            f8, f9 = player._curpat[voice]  # pylint: disable=protected-access
-            ptr = f8 | f9 << 8
-            if not ptr:
-                continue
-            pattern = GRAMMAR.parse_prefix(bytes(mem[ptr : ptr + 0x100]), pat_rule)
-            cursor = mem[player._a(0x1729) + voice]  # pylint: disable=protected-access
-            assert cursor in _boundaries(pattern.model)
-            order_ptr = mem[player._a(0x1707) + voice] | (
-                mem[player._a(0x170A) + voice] << 8
+            order_ptr = mem[a(engine.order_ptr[0]) + voice] | (
+                mem[a(engine.order_ptr[1]) + voice] << 8
             )
             order = GRAMMAR.parse_prefix(
-                bytes(mem[order_ptr : order_ptr + 0x100]), order_rule(build)
-            )
-            ok = set(_boundaries(order.model))
-            ok |= {
-                start + len(item.data) - 1
-                for start, item in zip(_boundaries(order.model), order.model.items)
-            }
-            assert mem[player._a(0x1726) + voice] in ok
+                bytes(mem[order_ptr : order_ptr + 0x100]), order_name
+            ).model
+            index = mem[a(engine.order_index) + voice]
+            start, item = _entry_start(order, index)
+            assert item is not None
+            assert index in (start, start + len(item.data) - 1)
+            if item.kind == "ORDER_LOOP" or item.kind == "ORDER_STOP":
+                continue
+            number = item.data[-1]
+            ptr = mem[lo + number] | (mem[hi + number] << 8)
+            if generation in ("v37", "v1d", "nn"):
+                f8, f9 = player._curpat[voice]  # pylint: disable=protected-access
+                ptr = f8 | f9 << 8
+                if not ptr:
+                    continue
+            pattern = GRAMMAR.parse_prefix(
+                bytes(mem[ptr : ptr + 0x100]), engine.pattern
+            ).model
+            assert mem[a(engine.pattern_index) + voice] in _boundaries(pattern)
             seen += 1
     assert seen
 
@@ -187,7 +216,7 @@ def test_order_loop_target_follows_the_build(tune_path):
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
     player = DmcPlayer(song)
-    jump = order_rule(player.song.facets()) == "order_jump"
+    jump = order_rule(player.song.facets(), song.variant()) == "order_jump"
     mem = player.m
     mem[0x0800:0x0803] = bytes((0xFF, 0x07, 0x00))
     result = player._order_loop(0x00, 0x08, 0)  # pylint: disable=protected-access

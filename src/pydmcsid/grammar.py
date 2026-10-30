@@ -9,7 +9,7 @@ a :class:`~pydmcsid.errors.DmcParseError` rather than being mis-played.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterator, List, Set, Tuple
 
 from lark import Token, Transformer
@@ -101,17 +101,35 @@ class _Build(Transformer):
             return items[0]
         return Item("ORDER_TRANSPOSE", b"".join(item.data for item in items))
 
+    def order_x(self, children):
+        """An $a1/$95 order list."""
+        return self._stream("order_x", children)
+
+    def pattern_a1(self, children):
+        """An $a1 pattern."""
+        return self._stream("pattern_a1", children)
+
+    def pattern95(self, children):
+        """A $95 pattern."""
+        return self._stream("pattern95", children)
+
+    def instrument8(self, children):
+        """A stride-8 instrument record."""
+        return self._stream("instrument8", children)
+
+    order_item_x = order_item
+
     def row37(self, children):
         """A row: a note, rest, tie or slide with its operand bytes."""
         return _merge(_row_kind(children), children)
 
-    row1d = row37
+    row1d = row_a1 = row_95 = row37
 
     def prefix37(self, children):
         """An instrument-select or duration byte."""
         return _merge(next(_flat(children)).kind, children)
 
-    prefix1d = prefix37
+    prefix1d = prefix_a1 = prefix_95 = prefix37
 
 
 def _row_kind(children) -> str:
@@ -121,28 +139,119 @@ def _row_kind(children) -> str:
 GRAMMAR = ByteGrammar(
     "pydmcsid",
     "dmc.lark",
-    start=("order", "order_jump", "pattern37", "pattern1d", "instrument"),
+    start=(
+        "order",
+        "order_jump",
+        "pattern37",
+        "pattern1d",
+        "instrument",
+        "order_x",
+        "pattern_a1",
+        "pattern95",
+        "instrument8",
+    ),
     transformer=_Build(),
     error=DmcParseError,
 )
 
 _ORDER_KINDS = ("ORDER_PATTERN", "ORDER_TRANSPOSE")
-_PATTERN_RULES = {"v37": "pattern37", "v1d": "pattern1d", "nn": "pattern1d"}
 
 
-def order_rule(build) -> str:
-    """The order-list start rule for a build's ``order_loop`` facet."""
+@dataclass(frozen=True)
+class Engine:
+    """Where one body generation keeps the streams its voices walk.
+
+    ``order_ptr`` are the authored addresses of the per-voice order-list pointer
+    low/high cells, ``order_index`` and ``pattern_index`` those of the per-voice
+    order and pattern cursors; ``pattern_lo``/``pattern_hi``/``instrument`` name
+    the player's table-base attributes.
+    """
+
+    pattern: str
+    instrument: str
+    instrument_size: int
+    order_ptr: Tuple[int, int]
+    order_index: int
+    pattern_index: int
+    pattern_lo: str
+    pattern_hi: str
+    instrument_base: str
+    order: str = ""
+
+
+_V37 = Engine(
+    "pattern37",
+    "instrument",
+    INSTRUMENT_SIZE,
+    (constants.ORDER_PTR_LO, constants.ORDER_PTR_HI),
+    0x1726,
+    0x1729,
+    "b_pat_lo",
+    "b_pat_hi",
+    "b_instr",
+)
+ENGINES = {
+    "v37": _V37,
+    "v1d": replace(_V37, pattern="pattern1d"),
+    "nn": replace(_V37, pattern="pattern1d"),
+    "a1": Engine(
+        "pattern_a1",
+        "instrument8",
+        8,
+        (0x17CF, 0x17D2),
+        0x17D5,
+        0x17D8,
+        "b_patlo",
+        "b_pathi",
+        "b_inst",
+        order="order_x",
+    ),
+    "n95": Engine(
+        "pattern95",
+        "instrument8",
+        8,
+        (0x17D9, 0x17DC),
+        0x17DF,
+        0x17E2,
+        "b_patlo",
+        "b_pathi",
+        "b_inst",
+        order="order_x",
+    ),
+}
+_INSTRUMENT_PICKS = {
+    "INST37": lambda data: data[0] & 0x1F,
+    "INST1D": lambda data: data[0] & 0x1F,
+    "PARAM_A1": lambda data: data[1] if data[0] == 0xFC else None,
+    "PARAM_95": lambda data: data[1] if data[0] == 0xFC else None,
+}
+
+
+def order_rule(build, generation: str = "v37") -> str:
+    """The order-list start rule for a body ``generation`` and its build facets."""
+    if ENGINES[generation].order:
+        return ENGINES[generation].order
     return "order_jump" if build["order_loop"] == "jump" else "order"
 
 
 def pattern_rule(generation: str) -> str:
-    """The pattern start rule of a body ``generation`` (``v37``/``v1d``/``nn``)."""
-    return _PATTERN_RULES[generation]
+    """The pattern start rule of a body ``generation``."""
+    return ENGINES[generation].pattern
 
 
 def modelled(generation) -> bool:
     """Whether :func:`song_streams` has a grammar for this body generation."""
-    return generation in _PATTERN_RULES
+    return generation in ENGINES
+
+
+def instrument_numbers(stream: Stream) -> Set[int]:
+    """The instrument numbers a pattern ``stream`` selects."""
+    found = (
+        _INSTRUMENT_PICKS[item.kind](item.data)
+        for item in stream.items
+        if item.kind in _INSTRUMENT_PICKS
+    )
+    return {number for number in found if number is not None}
 
 
 def _word(mem, lo: int, hi: int, index: int) -> int:
@@ -173,32 +282,31 @@ def song_streams(song, subtune: int = 0) -> Iterator[Tuple[str, Stream, str]]:
     generation = player.song.variant()
     if not modelled(generation):
         return
+    engine = ENGINES[generation]
     mem = bytes(player.m)
     build = player.song.facets()
-    pattern_rule_ = pattern_rule(generation)
+    order_name = order_rule(build, generation)
     patterns: Set[int] = set()
     instruments: Set[int] = set()
     for voice in range(VOICES):
-        ptr = mem[player._a(constants.ORDER_PTR_LO) + voice] | (
-            mem[player._a(constants.ORDER_PTR_HI) + voice] << 8
-        )
-        what = f"voice {voice} order list"
-        order = _read(mem, ptr, order_rule(build), what)
-        yield f"voice{voice}.order", order.model, order_rule(build)
+        lo, hi = engine.order_ptr
+        ptr = mem[player._a(lo) + voice] | (mem[player._a(hi) + voice] << 8)
+        order = _read(mem, ptr, order_name, f"voice {voice} order list")
+        yield f"voice{voice}.order", order.model, order_name
         patterns.update(order.model.numbers(*_ORDER_KINDS))
     for number in sorted(patterns):
-        addr = _word(mem, player.b_pat_lo, player.b_pat_hi, number)
-        parsed = _read(mem, addr, pattern_rule_, f"pattern {number}")
-        yield f"pattern{number}", parsed.model, pattern_rule_
-        instruments.update(
-            item.data[0] & 0x1F
-            for item in parsed.model.items
-            if item.kind in ("INST37", "INST1D")
+        addr = _word(
+            mem,
+            getattr(player, engine.pattern_lo),
+            getattr(player, engine.pattern_hi),
+            number,
         )
+        parsed = _read(mem, addr, engine.pattern, f"pattern {number}")
+        yield f"pattern{number}", parsed.model, engine.pattern
+        instruments.update(instrument_numbers(parsed.model))
     for number in sorted(instruments):
-        addr = (player.b_instr + number * INSTRUMENT_SIZE) & 0xFFFF
-        yield (
-            f"instrument{number}",
-            _read(mem, addr, "instrument", f"instrument {number}").model,
-            "instrument",
-        )
+        addr = (
+            getattr(player, engine.instrument_base) + number * engine.instrument_size
+        ) & 0xFFFF
+        record = _read(mem, addr, engine.instrument, f"instrument {number}")
+        yield f"instrument{number}", record.model, engine.instrument

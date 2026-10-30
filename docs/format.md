@@ -81,21 +81,24 @@ followed to its first `RTS`) rather than assuming it per generation.
 `pysidtracker.ByteGrammar` (`pysidtracker grammar TUNE` lists a tune's streams).
 `Song.streams(subtune)` parses every stream a subtune's voices reach: each voice's
 order list, the patterns it names and the instruments those patterns select. A
-stream that does not parse raises `DmcParseError`. The `init-$37`, `init-$1d` and
-`$94a` bodies are covered; the `$a1` and `$95` engines have no grammar yet, and the
-wavetable and filter tables (parallel byte tables indexed from the instrument) are
-not streams.
+stream that does not parse raises `DmcParseError`. All five body generations are
+covered; the wavetable and filter tables (parallel byte tables indexed from the
+instrument) are not streams.
 
 | Stream | Rule | Bytes |
 |---|---|---|
 | order list | `order`, `order_jump` | pattern number `$00-$7f`; transpose `$80-$fd` followed by a pattern number (any byte, not range-checked); stop `$fe`; loop `$ff`, followed by a target order index in a build whose `order_loop` facet is `jump` |
 | pattern, init-`$37` | `pattern37` | note `$00-$5f`; instrument `$60-$7f` (low 5 bits); duration `$80-$bf` (low 6 bits); slide `$c0-$cf`/`$e0-$ef` + start note + target note, slide `$d0-$df`/`$f0-$fc` + target note; tie `$fd`; rest `$fe`; end `$ff` |
 | pattern, init-`$1d` | `pattern1d` | as above with tie `$7d`, rest `$7e`, end `$7f`, legato toggle `$7c`, volume `$f0-$ff` (a prefix), slides `$c0-$cf`/`$e0-$ef` and `$d0-$df` |
-| instrument | `instrument` | 11 bytes |
+| order list, `$a1`/`$95` | `order_x` | pattern number `$00-$7f`; transpose `$fd` (positive) or `$fc` (negated) + value + pattern number; stop `$fe`; loop `$ff` + target order index |
+| pattern, `$a1` | `pattern_a1` | note `$00-$7f`; row end `$fe`, gate-toggle row end `$f4`; portamento `$fa` + speed + target, `$fb` + speed + start + target; tie toggle `$f5`; one-operand commands `$fd` `$fc` `$f3` `$f9` `$f8` `$f2` `$f1` `$f7` `$f6`; end `$ff` |
+| pattern, `$95` | `pattern95` | as `$a1`, plus one-operand commands `$f0` and `$ef` |
+| instrument | `instrument`, `instrument8` | 11 bytes (init-`$37`/`$1d`, `$94a`), 8 bytes (`$a1`, `$95`) |
 
 A pattern is a run of rows, each preceded by any number of prefixes (instrument,
 duration, and in `init-$1d` legato and volume). A row is a note, rest, tie or
-slide. The end marker is only recognised straight after a row. An order-list
+slide. The end marker is only recognised straight after a row. A byte the player does
+not define as a command (it skips it) is a parse error rather than being accepted. An order-list
 transpose byte `$a0-$ff` adds `byte - $a0` to each note of the pattern that follows;
 `$80-$9f` subtracts `byte - $80` (`$80` is no transposition).
 
