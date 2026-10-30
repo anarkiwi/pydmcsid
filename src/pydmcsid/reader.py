@@ -870,6 +870,19 @@ class Song:
             )
         return self._decoded["byte_exact"]
 
+    def streams(self, subtune: int = 0):
+        """``(name, stream, rule)`` for every stream ``subtune`` reaches, each parsed
+        by :data:`pydmcsid.grammar.GRAMMAR`.
+
+        Raises:
+          DmcParseError: a reachable stream does not parse.
+        """
+        from pydmcsid.grammar import (  # pylint: disable=import-outside-toplevel
+            song_streams,
+        )
+
+        return list(song_streams(self, subtune))
+
     def facets(self):
         """The song's :class:`~pysidtracker.facets.Variant` (see :mod:`pydmcsid.variant`)."""
         if "facets" not in self._decoded:

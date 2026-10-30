@@ -1,8 +1,8 @@
-"""Exporter tests: a parsed Song serializes back to a loadable .prg / .sid.
+"""Exporter tests: a parsed Song serializes back to a .prg / .sid.
 
 The resident player+data image is reproduced byte-for-byte, so a re-parse yields
 the same tune; the round-tripped container also reproduces the original tune
-frame-for-frame on the jennings oracle (the packed form the DMC editor loads).
+frame-for-frame on the jennings oracle.
 """
 
 import pytest

@@ -45,6 +45,9 @@ dmc = "pydmcsid.format:dmc_format"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pydmcsid = ["*.lark"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

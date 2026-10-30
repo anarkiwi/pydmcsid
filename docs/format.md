@@ -15,7 +15,7 @@ same image; `.prg` images are read the same way. The image is loaded through the
 shared [`pysidtracker`](https://github.com/anarkiwi/pysidtracker) base and the
 per-tune table bases are read from the player-code operands — no baked
 addresses, so a differently-sized tune relocates its tables and is still found.
-Container headers are not trusted.
+Container headers are only partly trusted: the header init/play vectors are followed to detect play-wrappers, but the player body is located from the code.
 
 Recognition anchors on the resident player's *play body* (the opening
 `DEC tempo_ctr`, confirmed by opcode + operand `base+$718`) reached via the
@@ -63,8 +63,9 @@ The play routine models: tempo divider, per-voice orderlist walk (transpose /
 loop / stop), pattern walk (note / instrument-select / duration / effect /
 gate; the pattern markers are *rest / switch(tie) / end-of-pattern*, encoded
 `$fe/$fd/$ff` in the init-`$37` body and `$7e/$7d/$7f` in the init-`$1d` body),
-stride-11 instrument records driving PW init + a 16-bit PW sweep, the `$FF`-arp
-wavetable, triangle vibrato, glide, the pitch-slide effect and a 6-step filter
+stride-11 instrument records driving PW init + a 16-bit PW sweep, the
+wavetable (a control byte of `$90` or more steps the position back by that value
+minus `$90`), triangle vibrato, glide, the pitch-slide effect and a 6-step filter
 sweep, the hard-restart window, and the final per-voice frequency compose.
 
 The note-release gate-off ($133d) either leaves AD/SR static (the `$37` stock
@@ -73,6 +74,30 @@ inline `STA $100f,X`) or clears AD/SR=0 as an envelope-clearing hard-restart (th
 routine). Both generations ship both variants, so the `release` facet reads the
 behaviour from the actual release code (an inline store, or a `JSR` helper
 followed to its first `RTS`) rather than assuming it per generation.
+
+## Song streams
+
+`src/pydmcsid/dmc.lark` is the grammar of the streams the play routine reads, a
+`pysidtracker.ByteGrammar` (`pysidtracker grammar TUNE` lists a tune's streams).
+`Song.streams(subtune)` parses every stream a subtune's voices reach: each voice's
+order list, the patterns it names and the instruments those patterns select. A
+stream that does not parse raises `DmcParseError`. The `init-$37`, `init-$1d` and
+`$94a` bodies are covered; the `$a1` and `$95` engines have no grammar yet, and the
+wavetable and filter tables (parallel byte tables indexed from the instrument) are
+not streams.
+
+| Stream | Rule | Bytes |
+|---|---|---|
+| order list | `order`, `order_jump` | pattern number `$00-$7f`; transpose `$80-$fd` followed by a pattern number (any byte, not range-checked); stop `$fe`; loop `$ff`, followed by a target order index in a build whose `order_loop` facet is `jump` |
+| pattern, init-`$37` | `pattern37` | note `$00-$5f`; instrument `$60-$7f` (low 5 bits); duration `$80-$bf` (low 6 bits); slide `$c0-$cf`/`$e0-$ef` + start note + target note, slide `$d0-$df`/`$f0-$fc` + target note; tie `$fd`; rest `$fe`; end `$ff` |
+| pattern, init-`$1d` | `pattern1d` | as above with tie `$7d`, rest `$7e`, end `$7f`, legato toggle `$7c`, volume `$f0-$ff` (a prefix), slides `$c0-$cf`/`$e0-$ef` and `$d0-$df` |
+| instrument | `instrument` | 11 bytes |
+
+A pattern is a run of rows, each preceded by any number of prefixes (instrument,
+duration, and in `init-$1d` legato and volume). A row is a note, rest, tie or
+slide. The end marker is only recognised straight after a row. An order-list
+transpose byte `$a0-$ff` adds `byte - $a0` to each note of the pattern that follows;
+`$80-$9f` subtracts `byte - $80` (`$80` is no transposition).
 
 ## Player and playback notes
 
@@ -122,7 +147,7 @@ of every HVSC tune SIDId names `DMC` (`PLAYER`). Its `info` is `engine` (the
 `pysidtracker.SidParseError`), which the survey records as `not_decompiled`.
 
 ```bash
-pip install "pysidtracker[survey]>=0.38.0"
+pip install "pysidtracker[survey]>=0.43.0"
 python -m pysidtracker.survey find $HVSC --player '^\(?dmc(_v[45]\.x\))?$' --out .hvsc-survey/tunes.csv
 PYTHONPATH=scripts python -m pysidtracker.survey run $HVSC .hvsc-survey/tunes.csv \
     --work .hvsc-survey --render oracle_hvsc:render --jobs 32
@@ -160,10 +185,19 @@ HVSC tree and diffs two dumps, to show a refactor is behaviour-neutral.
 ## Export
 
 `to_prg(song)` / `to_sid(song)` / `write(song, path)` serialize a parsed tune
-back to the packed player+data image the DMC editor loads (`to_prg` a bare `.prg`
-= load address + resident image; `to_sid` a PSID/RSID container). The resident
-image is reproduced byte-for-byte, so `parse(to_prg(song))` yields the same tune
-and a re-wrapped `.sid` reproduces it frame-for-frame on the jennings oracle.
+back to its packed player+data image (`to_prg` a bare `.prg` = load address +
+resident image; `to_sid` a PSID/RSID container). The resident image is reproduced
+byte-for-byte, so `parse(to_prg(song))` yields the same tune and a re-wrapped
+`.sid` reproduces it frame-for-frame on the jennings oracle.
+
+The image is not a file the DMC editors load in general. A DMC V1-V4/V7.0 editor
+save is the same image written from `$1000`, and `to_prg` returns such a save
+unchanged. The C64 editors load with a plain KERNAL `LOAD` forced to `$1000` and
+never read a `.sid` or depack anything, so an export is editor-loadable only for a
+`v37`/`v1d` build with `load == base == $1000` and no stub. A build at another
+base, or a stub-prefixed image, loads at the wrong address; the V5-era
+`a1`/`n95`/`nn` engines have no editor form (V5 editors load only their `$4000`
+work file).
 
 ## References
 
