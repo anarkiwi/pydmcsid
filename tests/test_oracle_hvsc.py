@@ -56,9 +56,7 @@ TUNES = {
 }
 
 
-tune_id, oracle_match = make_oracle_fixtures(
-    TUNES, player=DmcPlayer, frames=250, max_lead=8
-)
+tune_id, oracle_match = make_oracle_fixtures(TUNES, player=DmcPlayer, max_lead=8)
 
 
 @pytest.mark.oracle
@@ -69,17 +67,17 @@ def test_render_matches_oracle(oracle_match):  # noqa: F811
 
 @pytest.mark.oracle
 @pytest.mark.parametrize(
-    "rel,song,frames",
+    "rel,song",
     [
-        ("MUSICIANS/C/Chotaire/Old_Times.sid", 2, 1500),
-        ("GAMES/S-Z/Session.sid", 1, 500),
-        ("GAMES/S-Z/Session.sid", 2, 500),
-        ("DEMOS/A-F/FST.sid", 1, 6000),
-        ("DEMOS/A-F/Axel_F_Remix.sid", 1, 6000),
+        ("MUSICIANS/C/Chotaire/Old_Times.sid", 2),
+        ("GAMES/S-Z/Session.sid", 1),
+        ("GAMES/S-Z/Session.sid", 2),
+        ("DEMOS/A-F/FST.sid", 1),
+        ("DEMOS/A-F/Axel_F_Remix.sid", 1),
     ],
     ids=["Old_Times_s2", "Session_s1", "Session_s2", "FST_s1", "Axel_F_Remix_s1"],
 )
-def test_song_full_length(rel, song, frames):
+def test_song_full_length(rel, song):
     """A whole subtune reproduces the oracle, each pinning a class of song-level bug.
 
     * Old_Times song 2: the $95 per-subtune init record (order-list pointers,
@@ -94,7 +92,6 @@ def test_song_full_length(rel, song, frames):
     assert_oracle_match(
         rel,
         lambda data: DmcPlayer(data, subtune=song - 1),
-        frames=frames,
         song=song,
         max_lead=8,
     )
