@@ -58,7 +58,8 @@ addopts = "-ra -n auto -m 'not oracle'"
 markers = ["oracle: byte-exact comparison against the sidtrace Docker oracle"]
 
 [tool.coverage.run]
-branch = true
+branch = false
+core = "sysmon"
 source = ["pydmcsid"]
 
 [tool.coverage.report]

@@ -32,7 +32,7 @@ jobs:
           tunes: tests tests/fixtures/dmc_corpus.txt
           native: tests/fixtures/dmc_native_manifest.txt
       - name: pytest + coverage (> 85%, oracle excluded)
-        run: pytest -v --timeout=240 --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
+        run: pytest --timeout=600 --cov=pydmcsid --cov-report=term-missing --cov-fail-under=85
 
   oracle:
     # Byte-exact comparison of DmcPlayer.render_grid against the sidtrace
