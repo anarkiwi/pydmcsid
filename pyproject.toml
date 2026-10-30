@@ -30,6 +30,7 @@ dev = [
     "pytest>=7",
     "pytest-cov>=4",
     "pytest-xdist>=3",
+    "pytest-timeout>=2",
     # Decompress the sidtrace oracle's zstd CSV traces (oracle comparison tests).
     "zstandard>=0.21",
 ]
@@ -57,7 +58,8 @@ addopts = "-ra -n auto -m 'not oracle'"
 markers = ["oracle: byte-exact comparison against the sidtrace Docker oracle"]
 
 [tool.coverage.run]
-branch = true
+branch = false
+core = "sysmon"
 source = ["pydmcsid"]
 
 [tool.coverage.report]

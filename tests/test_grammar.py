@@ -252,17 +252,17 @@ def _corrupt(song):
     return song
 
 
-def test_strict_parse_rejects_a_malformed_stream(tune_path):
-    """A malformed stream is a parse error under ``strict`` and plays otherwise."""
+def test_parse_rejects_a_malformed_stream_unless_lax(tune_path):
+    """A malformed stream is a parse error by default and plays under ``strict=False``."""
     song = pydmcsid.read(tune_path)
     data = pydmcsid.to_prg(_corrupt(song))
-    assert pydmcsid.parse(data).variant() == song.variant()
+    assert pydmcsid.parse(data, strict=False).variant() == song.variant()
     with pytest.raises(DmcParseError, match="voice 0 order list"):
-        pydmcsid.parse(data, strict=True)
+        pydmcsid.parse(data)
     with pytest.raises(DmcParseError, match="voice 0 order list"):
         DmcPlayer(song, song.start_song - 1, strict=True)
 
 
-def test_strict_parse_accepts_the_start_subtune(tune_path):
-    """Every cached tune's start subtune validates."""
-    assert pydmcsid.read(tune_path, strict=True).variant()
+def test_parse_accepts_the_start_subtune(tune_path):
+    """Every cached tune's start subtune validates under the default ``strict``."""
+    assert pydmcsid.read(tune_path).variant()

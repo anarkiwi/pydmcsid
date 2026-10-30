@@ -895,14 +895,16 @@ class Song:
         return self._decoded["facets"]
 
 
-def parse(data: bytes, strict: bool = False) -> Song:
+def parse(data: bytes, strict: bool = True) -> Song:
     """Parse SID/PRG ``data`` bytes into a :class:`Song`.
 
     Raises :class:`~pydmcsid.errors.DmcParseError` when the image is not a DMC tune
     or carries a DMC signature of a body generation pydmcsid does not model (so
     callers distinguish "not a DMC" from "a DMC we do not reproduce byte-exact").
-    With ``strict`` it also raises when a stream the start subtune's voices reach
-    does not parse against the song grammar (see :meth:`Song.streams`).
+    With ``strict`` (the default) it also raises when a stream the start subtune's
+    voices reach does not parse against the song grammar (see :meth:`Song.streams`),
+    so a malformed tune is rejected rather than mis-played; ``strict=False`` skips
+    that check.
     """
     with reraise_as(DmcParseError, SidError):
         image = SidImage.from_bytes(data)
@@ -952,7 +954,7 @@ def parse(data: bytes, strict: bool = False) -> Song:
     return song
 
 
-def read(path, strict: bool = False) -> Song:
+def read(path, strict: bool = True) -> Song:
     """Read a DMC tune from a ``.sid``/``.prg`` file path (see :func:`parse`)."""
     return parse(Path(path).read_bytes(), strict)
 
@@ -964,7 +966,7 @@ class DmcSidParser(BaseSidParser):
 
     def parse(self, data: bytes, **kwargs: Any) -> Song:
         """Parse ``data`` into a :class:`Song` (see :func:`parse`)."""
-        return parse(data, strict=bool(kwargs.get("strict", False)))
+        return parse(data, strict=bool(kwargs.get("strict", True)))
 
     def recognize(self, image: SidImage):
         """Return the DMC player JMP-table base if the image carries it."""

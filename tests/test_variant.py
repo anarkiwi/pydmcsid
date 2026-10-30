@@ -63,7 +63,7 @@ def test_order_table_falls_back_to_operand_as_default():
     from test_reader import _dmc_body  # pylint: disable=import-outside-toplevel
 
     body = bytearray(_dmc_body(0x1000, init_rel=0x37))
-    song = pydmcsid.parse(b"\x00\x10" + bytes(body))
+    song = pydmcsid.parse(b"\x00\x10" + bytes(body), strict=False)
     found = song.facets()
     assert found.source("order_table").kind == DEFAULT
     assert found["order_table"] == song.mem[0x103E] | song.mem[0x103F] << 8

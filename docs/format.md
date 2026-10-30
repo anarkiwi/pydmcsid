@@ -85,10 +85,11 @@ stream that does not parse raises `DmcParseError`. All five body generations are
 covered; the wavetable and filter tables (parallel byte tables indexed from the
 instrument) are not streams.
 
-`parse(data, strict=True)` (also `read(path, strict=True)` and `DmcPlayer(...,
-strict=True)`) checks the start subtune's (or the given subtune's) streams up front.
-It is off by default: a PSID header may claim subtunes whose order-list pointers
-lead nowhere, and the tune still plays.
+`parse(data)` and `read(path)` check the start subtune's streams up front
+(`strict=True`, the default) and raise `DmcParseError` for a malformed tune;
+`strict=False` skips the check. `DmcPlayer(..., strict=True)` does the same for the
+subtune it plays and is off by default: a PSID header may claim subtunes whose
+order-list pointers lead nowhere, and the tune's own code still plays them.
 
 | Stream | Rule | Bytes |
 |---|---|---|
