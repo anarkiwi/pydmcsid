@@ -1,7 +1,7 @@
 """The spec player against the sidtrace oracle over whole songs (``oracle`` marker).
 
-Same tunes and subtunes as ``test_oracle_hvsc`` that the spec states (the
-init-``$37``, init-``$1d`` and ``$94a`` bodies, including the play-wrapper builds).
+The tunes and subtunes of ``test_oracle_hvsc``, one per body generation the specs
+state, including the play-wrapper builds.
 """
 
 import pytest
@@ -23,6 +23,11 @@ TUNES = {
     "dude": "MUSICIANS/P/Psych858o/Dude_with_Attitude.sid",
     "losing": "MUSICIANS/P/Psych858o/Losing_Control.sid",
     "krupa_mix": "DEMOS/G-L/Krupa_Mix.sid",
+    "katusha": "DEMOS/G-L/Katusha.sid",
+    "blutal": "MUSICIANS/C/CreaMD/Blutal_Haldcole.sid",
+    "short_fusion": "MUSICIANS/P/PRI/Short_Fusion.sid",
+    "happy_rave": "DEMOS/G-L/Happy_Rave.sid",
+    "i_love_dmc": "MUSICIANS/B/Bayliss_Richard/I_Love_DMC.sid",
 }
 
 tune_id, oracle_match = make_oracle_fixtures(TUNES, player=spec_player, max_lead=8)
@@ -38,12 +43,13 @@ def test_spec_matches_oracle(oracle_match):  # noqa: F811
 @pytest.mark.parametrize(
     "rel,song",
     [
+        ("MUSICIANS/C/Chotaire/Old_Times.sid", 2),
         ("GAMES/S-Z/Session.sid", 1),
         ("GAMES/S-Z/Session.sid", 2),
         ("DEMOS/A-F/FST.sid", 1),
         ("DEMOS/A-F/Axel_F_Remix.sid", 1),
     ],
-    ids=["Session_s1", "Session_s2", "FST_s1", "Axel_F_Remix_s1"],
+    ids=["Old_Times_s2", "Session_s1", "Session_s2", "FST_s1", "Axel_F_Remix_s1"],
 )
 def test_spec_song_full_length(rel, song):
     """A whole subtune, including the subtune-selector wrapper, matches the oracle."""

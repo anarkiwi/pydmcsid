@@ -1,7 +1,7 @@
 """The DMC playroutine as :mod:`pysidtracker.playspec` specs, bound to a build.
 
 ``specs/dmc.play`` states the init-``$37``, init-``$1d`` and ``$94a`` bodies and
-``specs/dmc_a1.play`` the ``$a1`` engine; this module binds each spec's ``layout``
+``specs/dmc_a1.play`` and ``specs/dmc_95.play`` the ``$a1`` and ``$95`` engines; this module binds each spec's ``layout``
 from the song's :mod:`~pydmcsid.variant` facets and the player-code operands, and
 wires a :class:`~pysidtracker.playspec.SpecPlayer`.
 """
@@ -24,6 +24,7 @@ SPEC_FILES = {
     "v1d": "dmc.play",
     "nn": "dmc.play",
     "a1": "dmc_a1.play",
+    "n95": "dmc_95.play",
 }
 GENERATIONS = frozenset(SPEC_FILES)
 V1D_BODIES = frozenset({"v1d", "nn"})
@@ -137,6 +138,27 @@ def _binding_a1(song: Song) -> Dict[str, Any]:
     }
 
 
+def _binding95(song: Song) -> Dict[str, Any]:
+    def operand(off: int) -> int:
+        return _operand(song.mem, song.base, off)
+
+    return {
+        "base": song.base,
+        "sid": SID_BASE,
+        "patlo": operand(constants.N95_PATTERN_LO_OP),
+        "pathi": operand(constants.N95_PATTERN_HI_OP),
+        "inst": operand(constants.N95_INST_OP),
+        "wtctrl": operand(constants.N95_WT_CTRL_OP),
+        "wtarg": operand(constants.N95_WT_ARG_OP),
+        "pwa": operand(constants.N95_PW_A_OP),
+        "pwb": operand(constants.N95_PW_B_OP),
+        "filta": operand(constants.N95_FILT_A_OP),
+        "filtb": operand(constants.N95_FILT_B_OP),
+        "freqlo": (song.base + constants.N95_FREQ_LO_REL) & 0xFFFF,
+        "freqhi": (song.base + constants.N95_FREQ_HI_REL) & 0xFFFF,
+    }
+
+
 def binding(song: Song, subtune: int = 0) -> Tuple[Dict[str, Any], Song, int]:
     """``(layout binding, body song, subtune)`` for ``song``'s resident body.
 
@@ -149,6 +171,8 @@ def binding(song: Song, subtune: int = 0) -> Tuple[Dict[str, Any], Song, int]:
         raise DmcFormatError(f"no playspec for the {generation!r} body")
     if generation == "a1":
         return _binding_a1(song), song, subtune
+    if generation == "n95":
+        return _binding95(song), song, subtune
     return _binding85(song, generation in V1D_BODIES), song, subtune
 
 
@@ -156,8 +180,9 @@ def _body_entries(song: Song) -> Iterator[int]:
     """The addresses a play call can enter the resident play body at."""
     mem, base = song.mem, song.base
     jump = (mem[base + 4] | (mem[base + 5] << 8)) & 0xFFFF
-    if song.variant() == "a1":
-        if jump == (base + constants.DMC_PLAY_A1_REL) & 0xFFFF:
+    reorganised = {"a1": constants.DMC_PLAY_A1_REL, "n95": constants.DMC_PLAY_95_REL}
+    if song.variant() in reorganised:
+        if jump == (base + reorganised[song.variant()]) & 0xFFFF:
             yield jump
         return
     for entry in ((base + constants.DMC_PLAY_BODY_REL) & 0xFFFF, jump):

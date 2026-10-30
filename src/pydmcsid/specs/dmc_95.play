@@ -1,0 +1,513 @@
+spec dmc_95;
+
+layout {
+  base, sid, patlo, pathi, inst, wtctrl, wtarg, pwa, pwb, filta, filtb: addr;
+  freqlo, freqhi: addr;
+}
+
+cell sid: u8[32] @ L.sid out;
+cell pat_lo: u8[0x100] @ L.patlo ro;
+cell pat_hi: u8[0x100] @ L.pathi ro;
+cell inst: u8[0x110] @ L.inst ro;
+cell wt_ctrl: u8[0x100] @ L.wtctrl ro;
+cell wt_arg: u8[0x100] @ L.wtarg ro;
+cell pw_a: u8[0x100] @ L.pwa ro;
+cell pw_b: u8[0x100] @ L.pwb ro;
+cell filt_a: u8[0x100] @ L.filta ro;
+cell filt_b: u8[0x100] @ L.filtb ro;
+cell freq_lo: u8[0x100] @ L.freqlo ro;
+cell freq_hi: u8[0x100] @ L.freqhi ro;
+
+cell voice_on: u8[3] @ L.base + 0x009;
+cell sid_off: u8[3] @ L.base + 0x00c;
+cell note: u8[3] @ L.base + 0x012;
+cell tempo_ctr: u8 @ L.base + 0x016;
+cell vol_hi: u8 @ L.base + 0x018;
+cell cutoff_acc: u8 @ L.base + 0x019;
+cell volume: u8 @ L.base + 0x01a;
+cell vol_frac: u8 @ L.base + 0x01b;
+cell tempo_reload: u8 @ L.base + 0x0bf operand;
+cell order_lo: u8[3] @ L.base + 0x7d9;
+cell order_hi: u8[3] @ L.base + 0x7dc;
+cell order_idx: u8[3] @ L.base + 0x7df;
+cell cursor: u8[3] @ L.base + 0x7e2;
+cell dur_ctr: u8[3] @ L.base + 0x7e5;
+cell dur: u8[3] @ L.base + 0x7e8;
+cell c_inst: u8[3] @ L.base + 0x7eb;
+cell transpose: u8[3] @ L.base + 0x7ee;
+cell sus_over: u8[3] @ L.base + 0x7f1;
+cell tie: u8[3] @ L.base + 0x7f4;
+cell slide_speed: u8[3] @ L.base + 0x7f7;
+cell slide_tgt: u8[3] @ L.base + 0x7fa;
+cell wt_pos: u8[3] @ L.base + 0x7fd;
+cell pw_pos: u8[3] @ L.base + 0x800;
+cell filt_pos: u8 @ L.base + 0x803;
+cell vib_delay: u8[3] @ L.base + 0x806;
+cell vib_period: u8[3] @ L.base + 0x809;
+cell vib_lo: u8[3] @ L.base + 0x80c;
+cell vib_hi: u8[3] @ L.base + 0x80f;
+cell vib_ramp: u8[3] @ L.base + 0x812;
+cell newnote: u8[3] @ L.base + 0x815;
+cell freq_l: u8[3] @ L.base + 0x818;
+cell freq_h: u8[3] @ L.base + 0x81b;
+cell ctrl: u8[3] @ L.base + 0x81e;
+cell gate: u8[3] @ L.base + 0x821;
+cell term: u8[3] @ L.base + 0x827;
+cell pw_lo: u8[3] @ L.base + 0x82a;
+cell pw_hi: u8[3] @ L.base + 0x82d;
+cell pw_cnt: u8[3] @ L.base + 0x830;
+cell f1833: u8[3] @ L.base + 0x833;
+cell f1836: u8[3] @ L.base + 0x836;
+cell f1839: u8[3] @ L.base + 0x839;
+cell slide_lo: u8[3] @ L.base + 0x83c;
+cell slide_hi: u8[3] @ L.base + 0x83f;
+cell detune: u8[3] @ L.base + 0x842;
+cell wt_speed: u8[3] @ L.base + 0x845;
+cell wt_ctr: u8[3] @ L.base + 0x848;
+cell inst_off: u8[3] @ L.base + 0x84b;
+cell filt_cnt: u8 @ L.base + 0x84e;
+cell cutoff_base: u8 @ L.base + 0x853;
+cell fade_up: u8 @ L.base + 0x854;
+cell fade_down: u8 @ L.base + 0x855;
+cell shift_tmp: u8 @ L.base + 0x856;
+cell filt_gate: u8 @ L.base + 0x857;
+
+machine clock {
+  signal row: bool = false;
+  step {
+    tempo_ctr -= 1;
+    if neg(tempo_ctr) {
+      tempo_ctr := tempo_reload;
+      row := true;
+    }
+  }
+}
+
+machine voice[x in 0..3] {
+  step {
+    if clock.row { advance(); } else { tick_1373(); }
+  }
+
+  proc advance() {
+    if voice_on[x] == 0 { tick_1373(); return; }
+    dur_ctr[x] -= 1;
+    if dur_ctr[x] != 0 { tick_1373(); return; }
+    orderwalk();
+  }
+
+  proc orderwalk() {
+    let optr = word(order_lo[x], order_hi[x]);
+    stream ov = optr @ 0 grammar "pydmcsid.grammar:GRAMMAR:order_x";
+    let y = order_idx[x];
+    let v = mem[optr + u16(y)];
+    if v < 0x80 { pattern_setup(v); return; }
+    if v == 0xFF {
+      y := y + 1;
+      v := mem[optr + u16(y)];
+      order_idx[x] := v;
+      y := v;
+      v := mem[optr + u16(y)];
+    }
+    if v == 0xFD {
+      y := y + 1;
+      transpose[x] := mem[optr + u16(y)];
+      y := y + 1;
+      order_idx[x] := y;
+      v := mem[optr + u16(y)];
+    } elif v == 0xFC {
+      y := y + 1;
+      transpose[x] := (mem[optr + u16(y)] ^ 0xFF) + 1;
+      y := y + 1;
+      order_idx[x] := y;
+      v := mem[optr + u16(y)];
+    } elif v == 0xFE {
+      voice_on[x] := 0;
+      wt_output();
+      return;
+    }
+    pattern_setup(v);
+  }
+
+  proc pattern_setup(n: u8) {
+    patwalk(word(pat_lo[u16(n)], pat_hi[u16(n)]));
+  }
+
+  proc patwalk(p: u16) {
+    stream pv = p @ 0 grammar "pydmcsid.grammar:GRAMMAR:pattern95";
+    while true bound 1024 {
+      let y = cursor[x];
+      let v = mem[p + u16(y)];
+      if v < 0x80 { note_row(p, v, y); return; }
+      elif v == 0xFD { dur[x] := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xFC { c_inst[x] := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xF0 { cmd_f0(p, y); }
+      elif v == 0xFE { row_end(p, y); return; }
+      elif v == 0xF4 { gate[x] ^= 1; row_end(p, y); return; }
+      elif v == 0xF5 { tie[x] ^= 0xFF; cursor[x] := y + 1; }
+      elif v == 0xF3 { sus_over[x] := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xFB {
+        slide_speed[x] := mem[p + u16(y + 1)];
+        note[x] := mem[p + u16(y + 2)] + transpose[x];
+        slide_tgt[x] := mem[p + u16(y + 3)] + transpose[x];
+        cursor[x] := y + 3;
+        note_onset(p, y + 3);
+        return;
+      }
+      elif v == 0xFA {
+        slide_speed[x] := mem[p + u16(y + 1)];
+        slide_tgt[x] := mem[p + u16(y + 2)] + transpose[x];
+        cursor[x] := y + 2;
+        slide_lo[x] := 0;
+        slide_hi[x] := 0;
+        row_end(p, y + 2);
+        return;
+      }
+      elif v == 0xF9 {
+        let b = mem[p + u16(y + 1)];
+        filt_gate := b;
+        if b == 0 { sid[0x17] := b; } else { sid[0x17] := (b << 4) | 0x04; }
+        vol_hi := b & 0xF0;
+        cursor[x] := y + 2;
+      }
+      elif v == 0xF8 { cutoff_base := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xF2 {
+        sid[u16(sid_off[x]) + 5] := mem[p + u16(y + 1)];
+        cursor[x] += 2;
+      }
+      elif v == 0xF1 {
+        sid[u16(sid_off[x]) + 6] := mem[p + u16(y + 1)];
+        cursor[x] += 2;
+      }
+      elif v == 0xF7 { fade_up := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xF6 { fade_down := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      elif v == 0xEF { detune[x] := mem[p + u16(y + 1)]; cursor[x] := y + 2; }
+      else { cursor[x] := y + 1; }
+    }
+  }
+
+  proc cmd_f0(p: u16, y: u8) {
+    let v = mem[p + u16(y + 1)];
+    let shift = v & 0x07;
+    shift_tmp := shift;
+    vib_lo[x] := freq_hi[u16(note[x])];
+    if shift != 0 {
+      vib_hi[x] := 0;
+      vib_delay[x] := 0;
+      f1833[x] := 0;
+      f1836[x] := 0;
+      f1839[x] := 0;
+      for k in 0..8 {
+        if shift > k {
+          let c = vib_lo[x] >> 7;
+          vib_lo[x] := vib_lo[x] << 1;
+          vib_hi[x] := (vib_hi[x] << 1) | c;
+        }
+      }
+    }
+    vib_period[x] := (v >> 4) & 0x0F;
+    cursor[x] += 2;
+  }
+
+  proc row_end(p: u16, y: u8) {
+    dur_ctr[x] := dur[x];
+    cursor[x] := y + 1;
+    let v = mem[p + u16(y + 1)];
+    term[x] := v;
+    if v == 0xFF {
+      cursor[x] := 0;
+      sus_over[x] := 0;
+      tie[x] := 0;
+      order_idx[x] += 1;
+    }
+    wt_output();
+  }
+
+  proc note_row(p: u16, v: u8, y: u8) {
+    note[x] := v + transpose[x];
+    if tie[x] != 0 { row_end(p, y); return; }
+    note_onset(p, y);
+  }
+
+  proc note_onset(p: u16, y: u8) {
+    term[x] := mem[p + u16(y + 1)];
+    let idx = c_inst[x] << 3;
+    inst_off[x] := idx;
+    let ad = inst[u16(idx)];
+    let sr = inst[u16(idx) + 1];
+    let yv = u16(sid_off[x]);
+    if sus_over[x] != 0 {
+      sr := (sr & 0x0F) | (sus_over[x] << 4);
+      sid[yv + 6] := sr;
+      sid[yv + 5] := 0;
+    } else {
+      sid[yv + 6] := sr;
+      sid[yv + 5] := ad;
+    }
+    sid[yv + 4] := 0x09;
+    newnote[x] := 0x09;
+  }
+
+  proc tick_1373() {
+    if newnote[x] != 0 { note_init(); return; }
+    tick();
+  }
+
+  proc note_init() {
+    newnote[x] := 0;
+    slide_lo[x] := 0;
+    slide_hi[x] := 0;
+    dur_ctr[x] := dur[x];
+    cursor[x] += 1;
+    let idx = inst_off[x];
+    vib_period[x] := inst[u16(idx) + 6] & 0x0F;
+    if vib_period[x] != 0 {
+      vib_delay[x] := inst[u16(idx) + 5];
+      vib_ramp[x] := (inst[u16(idx) + 7] & 0xF0) >> 3;
+      let shift = inst[u16(idx) + 7] & 0x07;
+      shift_tmp := shift;
+      vib_lo[x] := freq_hi[u16(note[x])];
+      vib_hi[x] := 0;
+      f1833[x] := 0;
+      f1836[x] := 0;
+      f1839[x] := 0;
+      for k in 0..8 {
+        if shift > k {
+          let c = vib_lo[x] >> 7;
+          vib_lo[x] := vib_lo[x] << 1;
+          vib_hi[x] := (vib_hi[x] << 1) | c;
+        }
+      }
+    }
+    wt_speed[x] := inst[u16(idx) + 6] >> 4;
+    wt_ctr[x] := wt_speed[x];
+    wt_pos[x] := inst[u16(idx) + 2];
+    let pw = inst[u16(idx) + 3];
+    if pw != 0 {
+      pw_pos[x] := pw;
+      pw_hi[x] := pw_a[u16(pw)];
+      pw_lo[x] := pw_b[u16(pw)];
+      pw_cnt[x] := 0;
+      pw_pos[x] := pw_pos[x] + 1;
+    }
+    if x == 2 {
+      let flt = inst[u16(idx) + 4];
+      if flt != 0 {
+        filt_pos := flt;
+        cutoff_acc := filt_a[u16(flt)];
+        filt_cnt := 0;
+        filt_pos := filt_pos + 1;
+      }
+    }
+    wt_step(false);
+    gate[x] := 0xF7;
+    if term[x] == 0xFF {
+      cursor[x] := 0;
+      sus_over[x] := 0;
+      tie[x] := 0;
+      order_idx[x] += 1;
+    }
+    wt_speed_step();
+  }
+
+  proc wt_step(check_loop: bool) {
+    let y = wt_pos[x];
+    if check_loop && wt_ctrl[u16(y)] == 0x90 {
+      wt_pos[x] := wt_arg[u16(y)];
+      y := wt_pos[x];
+    }
+    let c = wt_ctrl[u16(y)];
+    ctrl[x] := c;
+    if c & 0x08 != 0 {
+      freq_h[x] := wt_arg[u16(y)];
+      freq_l[x] := 0;
+      return;
+    }
+    let s = u16(wt_arg[u16(y)]) + u16(note[x]);
+    let yn = lo(s);
+    if !check_loop {
+      freq_l[x] := freq_lo[u16(yn)];
+      freq_h[x] := freq_hi[u16(yn)];
+      return;
+    }
+    let l = u16(freq_lo[u16(yn)]) + u16(detune[x]) + u16(s > 0xFF);
+    freq_l[x] := lo(l);
+    freq_h[x] := freq_hi[u16(yn)] + u8(l > 0xFF);
+  }
+
+  proc tick() {
+    if x == 2 { filter_sweep(); }
+    let y = pw_pos[x];
+    if pw_a[u16(y)] == 0x90 {
+      pw_pos[x] := pw_b[u16(y)];
+      y := pw_pos[x];
+    }
+    let c = carry(pw_lo[x], pw_b[u16(y)]);
+    pw_lo[x] += pw_b[u16(y)];
+    pw_hi[x] := pw_hi[x] + pw_a[u16(y)] + u8(c);
+    y := y + 1;
+    pw_cnt[x] += 1;
+    if pw_cnt[x] == pw_b[u16(y)] {
+      pw_cnt[x] := 0;
+      pw_pos[x] := y + 1;
+    }
+    if slide_speed[x] != 0 { slide(); return; }
+    vibrato();
+  }
+
+  proc filter_sweep() {
+    if filt_gate == 0 { return; }
+    let y = filt_pos;
+    if filt_a[u16(y)] == 0x90 {
+      filt_pos := filt_b[u16(y)];
+      y := filt_pos;
+    }
+    cutoff_acc := cutoff_acc + filt_a[u16(y)];
+    y := y + 1;
+    filt_cnt += 1;
+    if filt_cnt == filt_b[u16(y)] {
+      filt_cnt := 0;
+      filt_pos := y + 1;
+    }
+  }
+
+  proc slide() {
+    let up = note[x] < slide_tgt[x];
+    let c = carry(freq_l[x], slide_lo[x]);
+    let chi = freq_h[x] + slide_hi[x] + u8(c);
+    let y = slide_tgt[x];
+    if chi == freq_hi[u16(y)] { slide_reach(y); return; }
+    if up {
+      let c2 = carry(slide_lo[x], slide_speed[x]);
+      slide_lo[x] += slide_speed[x];
+      slide_hi[x] += u8(c2);
+    } else {
+      let b = borrow(slide_lo[x], slide_speed[x]);
+      slide_lo[x] -= slide_speed[x];
+      slide_hi[x] -= u8(b);
+    }
+    wt_output();
+  }
+
+  proc slide_reach(y: u8) {
+    note[x] := y;
+    slide_lo[x] := 0;
+    slide_hi[x] := 0;
+    slide_speed[x] := 0;
+    wt_output();
+  }
+
+  proc vibrato() {
+    if tie[x] != 0 {
+      slide_lo[x] := 0;
+      slide_hi[x] := 0;
+      wt_output();
+      return;
+    }
+    if vib_period[x] == 0 { vol_fade(); return; }
+    if vib_delay[x] != 0 { vib_delay[x] -= 1; vol_fade(); return; }
+    if f1836[x] == 0 {
+      let c = carry(slide_lo[x], vib_lo[x]);
+      slide_lo[x] += vib_lo[x];
+      slide_hi[x] := slide_hi[x] + vib_hi[x] + u8(c);
+      f1839[x] += 1;
+      if f1839[x] != vib_period[x] { vol_fade(); return; }
+      f1836[x] += 1;
+      if vib_ramp[x] != 0 {
+        let c2 = carry(vib_lo[x], vib_ramp[x]);
+        vib_lo[x] += vib_ramp[x];
+        vib_hi[x] += u8(c2);
+        wt_output();
+        return;
+      }
+      if f1833[x] == 0 {
+        let c3 = vib_lo[x] >> 7;
+        vib_lo[x] := vib_lo[x] << 1;
+        vib_hi[x] := (vib_hi[x] << 1) | c3;
+        f1833[x] += 1;
+      }
+      wt_output();
+      return;
+    }
+    let b = borrow(slide_lo[x], vib_lo[x]);
+    slide_lo[x] -= vib_lo[x];
+    slide_hi[x] := slide_hi[x] - vib_hi[x] - u8(b);
+    f1839[x] -= 1;
+    if f1839[x] != 0 { vol_fade(); return; }
+    f1836[x] -= 1;
+    if vib_ramp[x] != 0 {
+      let c4 = carry(vib_lo[x], vib_ramp[x]);
+      vib_lo[x] += vib_ramp[x];
+      vib_hi[x] += u8(c4);
+      wt_output();
+      return;
+    }
+    vol_fade();
+  }
+
+  proc vol_fade() {
+    if fade_down != 0 {
+      let b = borrow(vol_frac, fade_down);
+      vol_frac -= fade_down;
+      volume -= u8(b);
+      if volume == 0 { fade_down := 0; }
+    }
+    if fade_up != 0 {
+      let c = carry(vol_frac, fade_up);
+      vol_frac += fade_up;
+      volume += u8(c);
+      if volume == 0x0F { fade_up := 0; }
+    }
+    sid[0x18] := volume | vol_hi;
+    wt_output();
+  }
+
+  proc wt_output() {
+    wt_step(true);
+    wt_speed_step();
+  }
+
+  proc wt_speed_step() {
+    if wt_ctr[x] != 0 { wt_ctr[x] -= 1; }
+    else { wt_pos[x] += 1; wt_ctr[x] := wt_speed[x]; }
+    output();
+  }
+
+  proc output() {
+    let yv = u16(sid_off[x]);
+    release(term[x]);
+    let c = carry(freq_l[x], slide_lo[x]);
+    sid[yv] := freq_l[x] + slide_lo[x];
+    sid[yv + 1] := freq_h[x] + slide_hi[x] + u8(c);
+    sid[yv + 2] := pw_lo[x];
+    sid[yv + 3] := pw_hi[x];
+    sid[yv + 4] := ctrl[x] & gate[x];
+  }
+
+  proc release(t: u8) {
+    let yv = u16(sid_off[x]);
+    if t == 0xFE || t == 0xFA || t == 0xF4 { return; }
+    if t == 0xF5 {
+      if tie[x] == 0 { return; }
+    } elif t >= 0x80 && t < 0xF3 {
+      return;
+    } else {
+      if tie[x] != 0 { return; }
+    }
+    if dur_ctr[x] == 1 { sid[yv + 6] := 0; return; }
+    if dur_ctr[x] == 2 && tempo_ctr == 0 { gate[x] := 0xF6; }
+  }
+}
+
+machine filter_out {
+  step {
+    sid[0x16] := cutoff_acc + cutoff_base;
+  }
+}
+
+schedule {
+  clock;
+  voice[0];
+  voice[1];
+  voice[2];
+  filter_out;
+}

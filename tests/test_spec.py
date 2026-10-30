@@ -108,5 +108,5 @@ def test_row_reader_equals_the_6502_for_all_memory(tune_path, voice):
 
 
 def test_supported_generations():
-    """The specs state the init-$37, init-$1d, $94a and $a1 bodies."""
-    assert set(GENERATIONS) == {"v37", "v1d", "nn", "a1"}
+    """The specs state the init-$37, init-$1d, $94a, $a1 and $95 bodies."""
+    assert set(GENERATIONS) == {"v37", "v1d", "nn", "a1", "n95"}
