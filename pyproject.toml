@@ -46,7 +46,7 @@ dmc = "pydmcsid.format:dmc_format"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pydmcsid = ["*.lark"]
+pydmcsid = ["*.lark", "specs/*.play"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

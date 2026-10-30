@@ -307,3 +307,8 @@ NN937_DEC_OP = 0xCE  # the wrapper play opens ``DEC counter`` (the multispeed ga
 
 ORDER_PTR_LO = 0x1707  # per-voice order-list pointer low cells (authored address)
 ORDER_PTR_HI = 0x170A  # per-voice order-list pointer high cells
+
+V1D_SR_TMP_OP = 0x84C  # STA <sr scratch> @ $184b (init-$1d sustain-override helper)
+ORDER_READ_ZP_OP = (
+    0xD6  # LDA (<ptr>),Y @ base+$d5 (the zero-page order/pattern pointer)
+)
