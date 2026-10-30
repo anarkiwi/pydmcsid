@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pydmcsid"
-version = "0.3.0"
+version = "0.4.0"
 description = "Pure-Python reader and player for DMC (Demo Music Creator) SID tunes"
 readme = "README.md"
 requires-python = ">=3.11"
