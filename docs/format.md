@@ -85,6 +85,11 @@ stream that does not parse raises `DmcParseError`. All five body generations are
 covered; the wavetable and filter tables (parallel byte tables indexed from the
 instrument) are not streams.
 
+`parse(data, strict=True)` (also `read(path, strict=True)` and `DmcPlayer(...,
+strict=True)`) checks the start subtune's (or the given subtune's) streams up front.
+It is off by default: a PSID header may claim subtunes whose order-list pointers
+lead nowhere, and the tune still plays.
+
 | Stream | Rule | Bytes |
 |---|---|---|
 | order list | `order`, `order_jump` | pattern number `$00-$7f`; transpose `$80-$fd` followed by a pattern number (any byte, not range-checked); stop `$fe`; loop `$ff`, followed by a target order index in a build whose `order_loop` facet is `jump` |

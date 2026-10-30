@@ -22,6 +22,7 @@ from pysidtracker import (
     init_effects,
     locate,
 )
+from pysidtracker.errors import reraise_as
 from pysidtracker.facets import Finding, detected
 from pysidtracker.header import SidHeader
 from pysidtracker.locate import STATIC
@@ -894,17 +895,17 @@ class Song:
         return self._decoded["facets"]
 
 
-def parse(data: bytes) -> Song:
+def parse(data: bytes, strict: bool = False) -> Song:
     """Parse SID/PRG ``data`` bytes into a :class:`Song`.
 
     Raises :class:`~pydmcsid.errors.DmcParseError` when the image is not a DMC tune
     or carries a DMC signature of a body generation pydmcsid does not model (so
     callers distinguish "not a DMC" from "a DMC we do not reproduce byte-exact").
+    With ``strict`` it also raises when a stream the start subtune's voices reach
+    does not parse against the song grammar (see :meth:`Song.streams`).
     """
-    try:
+    with reraise_as(DmcParseError, SidError):
         image = SidImage.from_bytes(data)
-    except SidError as exc:
-        raise DmcParseError(str(exc)) from exc
     located = locate_dmc(image.mem, image.load)
     if not located.ok:
         raise DmcParseError(
@@ -946,12 +947,14 @@ def parse(data: bytes) -> Song:
         dispatch=located.layout,
     )
     song._decoded["variant"] = variant  # pylint: disable=protected-access
+    if strict:
+        song.streams(max(start - 1, 0))
     return song
 
 
-def read(path) -> Song:
-    """Read a DMC tune from a ``.sid``/``.prg`` file path."""
-    return parse(Path(path).read_bytes())
+def read(path, strict: bool = False) -> Song:
+    """Read a DMC tune from a ``.sid``/``.prg`` file path (see :func:`parse`)."""
+    return parse(Path(path).read_bytes(), strict)
 
 
 class DmcSidParser(BaseSidParser):
@@ -961,7 +964,7 @@ class DmcSidParser(BaseSidParser):
 
     def parse(self, data: bytes, **kwargs: Any) -> Song:
         """Parse ``data`` into a :class:`Song` (see :func:`parse`)."""
-        return parse(data)
+        return parse(data, strict=bool(kwargs.get("strict", False)))
 
     def recognize(self, image: SidImage):
         """Return the DMC player JMP-table base if the image carries it."""
