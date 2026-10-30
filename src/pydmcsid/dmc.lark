@@ -7,6 +7,10 @@
 //   pattern1d            pattern stream of the init-$1d body (and the $94a family)
 //   instrument           one stride-11 instrument record
 //
+//   order_x              order list of the $a1 and $95 engines (always a jump loop)
+//   pattern_a1/pattern95 pattern streams of the $a1 and $95 engines
+//   instrument8          one stride-8 instrument record of those engines
+//
 // Bytes stored after a terminator are never read through that stream's pointer.
 
 %import bytes (BYTE, _TAIL)
@@ -55,3 +59,29 @@ SLIDE_REST1D: /[\xd0-\xdf]/
 VOLUME1D: /[\xf0-\xff]/
 
 instrument: BYTE~11 _TAIL?
+
+// $a1 / $95 engines: order entries are a pattern number, or a transpose command
+// ($fd positive, $fc negated) with its value and then the pattern number.
+order_x: order_item_x* (ORDER_STOP | order_jump_loop) _TAIL?
+order_item_x: ORDER_PATTERN | ORDER_XPOSE BYTE BYTE
+ORDER_XPOSE: /[\xfc\xfd]/
+
+// A row is a note, a row end or a portamento; any other command is a prefix with
+// its operand. The end marker is only recognised straight after a row.
+pattern_a1: (prefix_a1* row_a1)+ END_X _TAIL?
+pattern95: (prefix_95* row_95)+ END_X _TAIL?
+prefix_a1: PARAM_A1 BYTE | TIE_X
+prefix_95: PARAM_95 BYTE | TIE_X
+row_a1: NOTE_X | ROW_END_X | PORTA_X BYTE BYTE | PORTA_FROM_X BYTE BYTE BYTE
+row_95: NOTE_X | ROW_END_X | PORTA_X BYTE BYTE | PORTA_FROM_X BYTE BYTE BYTE
+
+NOTE_X: /[\x00-\x7f]/
+PARAM_A1: /[\xfd\xfc\xf3\xf9\xf8\xf2\xf1\xf7\xf6]/
+PARAM_95: /[\xfd\xfc\xf3\xf9\xf8\xf2\xf1\xf7\xf6\xf0\xef]/
+TIE_X: /[\xf5]/
+ROW_END_X: /[\xfe\xf4]/
+PORTA_X: /[\xfa]/
+PORTA_FROM_X: /[\xfb]/
+END_X: /[\xff]/
+
+instrument8: BYTE~8 _TAIL?
