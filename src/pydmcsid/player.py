@@ -6,10 +6,20 @@ on that memory, and a play wrapper's call into the resident play body is trapped
 and run as the spec.
 """
 
-from pysidtracker.playspec import SpecPlayer
+from functools import lru_cache
+
+from pysidtracker.playspec import SpecPlayer, compile_program, elaborate
+from pysidtracker.playspec.pyexec import controls
 
 from pydmcsid.reader import Song, parse
 from pydmcsid.spec import binding, body_entries, spec
+
+
+@lru_cache(maxsize=3)
+def _lowered(variant: str, layout: tuple):
+    """The elaborated program and compiled frame of a spec bound to ``layout``."""
+    program = elaborate(spec(variant), dict(layout))
+    return program, compile_program(program)
 
 
 class DmcPlayer(SpecPlayer):
@@ -45,3 +55,11 @@ class DmcPlayer(SpecPlayer):
             entries=lambda view: entries,
             validate=validate,
         )
+
+    def _instance(self, entry: int) -> tuple:
+        key = (self._bus.bits, entry)
+        if key not in self._compiled:
+            layout = tuple(sorted(self._bind(self.view(), entry).items()))
+            program, frame = _lowered(self.song.variant(), layout)
+            self._compiled[key] = (program, frame, controls(program))
+        return self._compiled[key]
