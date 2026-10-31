@@ -9,6 +9,7 @@ from pysidtracker.playspec.tv import validate
 
 import pydmcsid
 from pydmcsid import DmcPlayer
+from pydmcsid.format import dmc_format
 from pydmcsid.spec import GENERATIONS, binding, spec, supported
 
 STACK = slice(0x100, 0x200)
@@ -123,3 +124,14 @@ def test_routines_equal_the_6502_for_all_memory(tune_path, voice):
 def test_supported_generations():
     """The specs state the init-$37, init-$1d, $94a, $a1 and $95 bodies."""
     assert set(GENERATIONS) == {"v37", "v1d", "nn", "a1", "n95"}
+
+
+def test_format_exports_the_spec(tune_path):
+    """The format's ``spec`` hook binds the packaged .play and plays as DmcPlayer."""
+    song = _song(tune_path)
+    fmt = dmc_format()
+    bound = fmt.spec(song)
+    layout, body, _ = binding(song)
+    assert bound.spec is spec(body.variant()) and bound.bind(None, None) == layout
+    assert elaborate(bound.spec, bound.bind(None, None)).name.startswith("dmc")
+    assert fmt.spec_player(song).render_grid(300) == DmcPlayer(song).render_grid(300)

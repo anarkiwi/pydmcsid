@@ -1,4 +1,5 @@
-"""pysidtracker format registration: lets the shared tooling census DMC tunes.
+"""pysidtracker format registration: lets the shared tooling census DMC tunes, and
+:meth:`~pysidtracker.SidFormat.spec_player` plays a song from its exported playspec.
 
 Registered on the ``pysidtracker.formats`` entry point, so ``pysidtracker variant
 census`` and the survey renderer classify DMC tunes by their :mod:`pydmcsid.variant`
@@ -12,6 +13,7 @@ from pysidtracker import SidFormat
 from pydmcsid.grammar import GRAMMAR
 from pydmcsid.player import DmcPlayer
 from pydmcsid.reader import DmcSidParser, Song
+from pydmcsid.spec import spec_binding
 from pydmcsid.variant import facet_sites
 
 
@@ -41,4 +43,5 @@ def dmc_format() -> SidFormat:
         streams=_streams,
         canonical=_canonical,
         probes={"byte_exact": Song.byte_exact},
+        spec=spec_binding,
     )

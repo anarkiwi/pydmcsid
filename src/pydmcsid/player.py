@@ -12,7 +12,7 @@ from pysidtracker.playspec import SpecPlayer, compile_program, elaborate
 from pysidtracker.playspec.pyexec import controls
 
 from pydmcsid.reader import Song, parse
-from pydmcsid.spec import binding, body_entries, spec
+from pydmcsid.spec import binding, spec, spec_binding
 
 
 @lru_cache(maxsize=3)
@@ -39,20 +39,18 @@ class DmcPlayer(SpecPlayer):
         song = source if isinstance(source, Song) else parse(bytes(source))
         if strict:
             song.streams(subtune)
-        layout, body, _ = binding(song, subtune)
-        entries = frozenset(body_entries(body))
-        self.song = body
-        self.layout = layout
-        self.base = body.base
+        bound = spec_binding(song, subtune)
+        self.layout, self.song, _ = binding(song, subtune)
+        self.base = self.song.base
         super().__init__(
-            spec(body.variant()),
-            bytes(song.mem[song.load : song.load + song.image_len]),
+            bound.spec,
+            bound.image,
             song.load,
             song.init,
             song.play,
             subtune,
-            bind=lambda view, entry: layout,
-            entries=lambda view: entries,
+            bind=bound.bind,
+            entries=bound.entries,
             validate=validate,
         )
 
