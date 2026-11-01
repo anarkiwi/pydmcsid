@@ -14,6 +14,7 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any, Dict, Iterator, Tuple
 
+from pysidtracker.formats import SpecBinding
 from pysidtracker.playspec import parse as parse_spec
 
 from pydmcsid import constants
@@ -191,3 +192,21 @@ def body_entries(song: Song) -> Iterator[int]:
     for entry in ((base + constants.DMC_PLAY_BODY_REL) & 0xFFFF, jump):
         if _play_body_ok(mem, entry, base):
             yield entry
+
+
+def spec_binding(song: Song, subtune: int = 0) -> SpecBinding:
+    """The :class:`~pysidtracker.formats.SpecBinding` of ``song``'s resident body at
+    0-based ``subtune``: its generation's spec, layout and play-body entries.
+
+    Raises:
+      DmcFormatError: no spec states this body generation.
+    """
+    layout, body, _ = binding(song, subtune)
+    entries = frozenset(body_entries(body))
+    return SpecBinding(
+        spec(body.variant()),
+        lambda view, entry: layout,
+        bytes(song.mem[song.load : song.load + song.image_len]),
+        entries=lambda view: entries,
+        subtune=subtune,
+    )
