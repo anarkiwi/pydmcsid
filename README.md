@@ -26,7 +26,9 @@ import pydmcsid
 song = pydmcsid.read("tune.sid")       # path, bytes, or binary file object
 print(song.byte_exact())               # is this build reproduced frame-for-frame?
 
-grid = pydmcsid.DmcPlayer(song).render_grid(3000)   # per-frame $D400..$D418 (25 regs)
+player = pydmcsid.DmcPlayer(song)
+grid = player.render_grid(3000)        # per-frame $D400..$D418 (25 regs)
+print(player.state("voice[0].dur"))    # a player variable, kept as playspec state
 
 for w in pydmcsid.iter_register_writes(song, max_frames=50 * 60):
     print(w.clock, w.reg, w.val)       # absolute CPU cycle, $D4xx reg offset, value

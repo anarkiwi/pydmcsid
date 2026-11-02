@@ -1,0 +1,5 @@
+# HVSC DMC tunes whose play call runs code of the tune's own for a voice: the player's work area
+# is then read and written by 6502 the spec does not state, so they are refused.
+MUSICIANS/C/Compod/Wild_Party.sid
+MUSICIANS/T/Tichelmann_Kay/3rd_Voice.sid
+MUSICIANS/T/Tichelmann_Kay/Talk_a_Lot_2_tune_06.sid

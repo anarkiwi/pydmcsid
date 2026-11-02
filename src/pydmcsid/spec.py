@@ -72,12 +72,35 @@ def _note_cells(song: Song, v1d: bool) -> Tuple[int, ...]:
     return tuple(cell - 0x1000 for cell in NOTE_CELLS)
 
 
-def _play_voices(song: Song) -> List[int]:
-    """The voices the play call runs: those whose call the body's unrolled loop keeps."""
+def _voice_calls(song: Song) -> List[Tuple[int, int, int]]:
+    """``(voice, opcode, target)`` of each call the body's unrolled loop makes, or none."""
     mem, base = song.mem, song.base
     sites = [base + constants.DMC_PLAY_LOOP_REL + 4 * voice for voice in range(3)]
-    unrolled = mem[sites[0] + 3] == 0xE8 and mem[sites[1] + 3] == 0xE8
-    return [v for v in range(3) if not unrolled or mem[sites[v]] == 0x20]
+    if mem[sites[0] + 3] != 0xE8 or mem[sites[1] + 3] != 0xE8:
+        return []
+    return [
+        (voice, mem[site], mem[site + 1] | mem[site + 2] << 8)
+        for voice, site in enumerate(sites)
+    ]
+
+
+def _play_voices(song: Song) -> List[int]:
+    """The voices the play call runs: those whose call the body's unrolled loop keeps."""
+    calls = _voice_calls(song)
+    step = (song.base + constants.DMC_STEP_REL) & 0xFFFF
+    return [v for v, op, target in calls if op in (0x20, 0x4C) and target == step] or (
+        [] if calls else [0, 1, 2]
+    )
+
+
+def _runs_own_code(song: Song) -> bool:
+    """Whether the unrolled loop calls, for a voice, code that is not a return."""
+    return song.variant() in FAMILIES and any(
+        op in (0x20, 0x4C)
+        and target != (song.base + constants.DMC_STEP_REL) & 0xFFFF
+        and song.mem[target] != 0x60
+        for _voice, op, target in _voice_calls(song)
+    )
 
 
 def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
@@ -118,6 +141,7 @@ def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
         "v1d": int(v1d),
         "v37": int(not v1d),
         "run": _play_voices(song),
+        "filtered": int(song.mem[song.base + constants.DMC_PLAY_LOOP_REL + 8] != 0x4C),
         "rest_1322": int(v1d and build["rest_tail"] == constants.REST_TAIL_1322),
         "burst_imm": (build["burst_imm"] or 0) if v1d else 0,
     }
@@ -265,6 +289,8 @@ def spec_binding(song: Song, subtune: int = 0) -> SpecBinding:
       DmcFormatError: no spec states this body generation.
     """
     layout, body, _ = binding(song, subtune)
+    if _runs_own_code(body):
+        raise DmcFormatError("the play call runs code of the tune's own for a voice")
     entries = frozenset(body_entries(body))
     generation = body.variant()
     family = FAMILIES.get(generation, generation)

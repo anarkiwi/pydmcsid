@@ -1,12 +1,16 @@
 """The playspec of the DMC bodies: static checks and agreement with the player."""
 
+from pathlib import Path
+
 import pytest
 
 from pysidtracker import song_frames
 from pysidtracker.oracle import EmuPlayer
+from pysidtracker.testing import resolve_tune
 
 import pydmcsid
 from pydmcsid import DmcPlayer
+from pydmcsid.errors import DmcFormatError
 from pydmcsid.format import dmc_format
 from pydmcsid.spec import GENERATIONS, spec, supported, variables_of
 
@@ -103,3 +107,22 @@ def test_format_exports_the_spec(tune_path):
     assert dmc_format().spec_player(song).render_grid(300) == (
         DmcPlayer(song).render_grid(300)
     )
+
+
+REFUSED = Path(__file__).parent / "fixtures" / "dmc_refused.txt"
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        line.strip()
+        for line in REFUSED.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ],
+)
+def test_a_play_call_running_the_tunes_own_voice_code_is_refused(relpath):
+    """The listed tunes call code of their own for a voice, which the spec cannot state."""
+    path = resolve_tune(relpath)
+    assert path is not None
+    with pytest.raises(DmcFormatError, match="code of the tune's own"):
+        DmcPlayer(pydmcsid.read(path))

@@ -3,7 +3,7 @@
 // orderlist names a pattern ($FF jumps, $80.. transposes, $FE ends the voice), the pattern's rows
 // set duration and instrument and end at a note, a rest, a tie or a slide. A note starts the sound on
 // the next call: the instrument's pulse, filter, vibrato and arpeggio then run every call. The play
-// call runs the voices L.run names (a tune may patch one out and call it itself). The
+// call runs the voices L.run names (a tune may patch one out and call it itself, or end the call on the last). The
 // player's other entries run, for the voice in X, its whole call, its steady call, the sustain from
 // its pulse step, its glide, delay or vibrato, its vibrato's turn or its arpeggio and register write.
 spec dmc;
@@ -11,7 +11,7 @@ spec dmc;
 layout {
   instr, patlo, pathi, freqlo, freqhi, pwtab, arp_ctrl, arp_note, filt_ctrl, step_lo, step_hi: addr;
   vibseed, order_lo, order_hi, tempo, volume, filt_bit, filt_mask: addr;
-  release_clears, order_jump, has_tail, v1d, v37, onset_on, rest_1322: flag;
+  release_clears, order_jump, has_tail, v1d, v37, onset_on, rest_1322, filtered: flag;
   tail_val, onset_ctrl, onset_adsr, burst_imm, pw_shift, call: byte;
   run, wild_freq_lo, wild_freq_hi, wild_instr, wild_pwtab: list;
   init_tempo_ctr, init_fstep, init_fdwell, init_fbase, init_cutoff, init_floop, init_fgoal,
@@ -706,6 +706,8 @@ schedule {
     for v in L.run {
       voice[v];
     }
-    filter_out;
+    if L.filtered {
+      filter_out;
+    }
   }
 }
