@@ -5,10 +5,9 @@ import pytest
 import pydmcsid
 from pydmcsid import DmcPlayer
 from pydmcsid.errors import DmcParseError
-from pysidtracker.playspec import elaborate, run
 
 from pydmcsid.grammar import ENGINES, GRAMMAR, modelled, order_rule, pattern_rule
-from pydmcsid.spec import binding, spec
+from pydmcsid.spec import variables_of
 
 MODELLED = ("v37", "v1d", "nn")
 
@@ -142,19 +141,19 @@ def test_player_cursors_stay_on_stream_items(tune_path):
     player = DmcPlayer(song)
     engine = ENGINES[generation]
     layout = player.layout
-    rel = player.base - 0x1000
     order_name = order_rule(player.song.facets(), generation)
     seen = 0
     for _ in range(600):
         player.play_frame()
         mem = player.memory
         for voice in range(3):
-            lo, hi = (cell + rel + voice for cell in engine.order_ptr)
-            order_ptr = mem[lo] | (mem[hi] << 8)
+            order_ptr = mem[layout["order_lo"] + voice] | (
+                mem[layout["order_hi"] + voice] << 8
+            )
             order = GRAMMAR.parse_prefix(
                 bytes(mem[order_ptr : order_ptr + 0x100]), order_name
             ).model
-            index = mem[engine.order_index + rel + voice]
+            index = player.state(f"voice[{voice}].seqpos")
             start, item = _entry_start(order, index)
             assert item is not None
             assert index in (start, start + len(item.data) - 1)
@@ -167,31 +166,34 @@ def test_player_cursors_stay_on_stream_items(tune_path):
             pattern = GRAMMAR.parse_prefix(
                 bytes(mem[ptr : ptr + 0x100]), engine.pattern
             ).model
-            assert mem[engine.pattern_index + rel + voice] in _boundaries(pattern)
+            assert player.state(f"voice[{voice}].patpos") in _boundaries(pattern)
             seen += 1
     assert seen
-
-
-def _run_routine(song, routine, memory, patch):
-    """``routine`` of the song's spec run once on ``memory`` after ``patch``."""
-    layout, body, _ = binding(song)
-    program = elaborate(spec(body.variant()), layout, routine=routine)
-    mem = bytearray(memory)
-    patch(mem, layout, body.base - 0x1000)
-    run(program, mem)
-    return mem, layout
 
 
 ORDER_AT = 0x0800
 
 
-def _order_list(data, index=0):
-    def patch(mem, _layout, rel):
-        mem[ORDER_AT : ORDER_AT + len(data)] = bytes(data)
-        mem[0x1707 + rel], mem[0x170A + rel] = ORDER_AT & 0xFF, ORDER_AT >> 8
-        mem[0x1726 + rel] = index
+def _poke(player, name, value, voice=0):
+    """Set a one-byte player variable in the work area the init left, before the first call."""
+    var = next(v for v in variables_of(player.song) if v.name == name)
+    player._mem[player.base + var.at[0] + voice] = value
 
-    return patch
+
+def _row_player(song, order, index=0, **variables):
+    """A player whose voice 0 reads its next row at the first call, from ``order`` at ``index``."""
+    player = DmcPlayer(song)
+    layout = player.layout
+    player._mem[ORDER_AT : ORDER_AT + len(order)] = bytes(order)
+    player._mem[layout["order_lo"]] = ORDER_AT & 0xFF
+    player._mem[layout["order_hi"]] = ORDER_AT >> 8
+    _poke(player, "seqpos", index)
+    _poke(player, "active", 1)
+    _poke(player, "left", 1)
+    _poke(player, "tempo_ctr", player._mem[layout["tempo"]] + 1)
+    for name, value in variables.items():
+        _poke(player, name, value)
+    return player
 
 
 @pytest.mark.parametrize(
@@ -203,10 +205,9 @@ def test_order_transpose_byte_sets_note_transpose(tune_path, byte, transpose):
     song = pydmcsid.read(tune_path)
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
-    player = DmcPlayer(song)
-    patch = _order_list([byte, 0x00, 0xFE])
-    mem, _ = _run_routine(song, "voice[0].orderwalk", player.memory, patch)
-    assert mem[0x172C + player.base - 0x1000] == transpose
+    player = _row_player(song, [byte, 0x00, 0xFE])
+    player.play_frame()
+    assert player.state("voice[0].trans") == transpose
 
 
 def test_wavetable_control_steps_position_back(tune_path):
@@ -215,15 +216,15 @@ def test_wavetable_control_steps_position_back(tune_path):
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
     player = DmcPlayer(song)
-
-    def patch(mem, layout, rel):
-        mem[layout["arp_ctrl"] + 3], mem[layout["arp_ctrl"] + 5] = 0x20, 0x92
-        mem[0x177A + rel] = 5
-
-    mem, _ = _run_routine(song, "voice[0].compose", player.memory, patch)
-    rel = player.base - 0x1000
-    assert mem[0x177A + rel] == 4
-    assert mem[0x1780 + rel] == 0x20
+    arp = player.layout["arp_ctrl"]
+    player._mem[arp + 3], player._mem[arp + 5] = 0x20, 0x92
+    for name, value in (("active", 0), ("fresh", 0), ("flags", 0), ("wave_pos", 5)):
+        _poke(player, name, value)
+    for name in ("glide", "delay", "restart"):
+        _poke(player, name, 0)
+    player.play_frame()
+    assert player.state("voice[0].wave_pos") == 4
+    assert player.state("voice[0].ctrl") == 0x20
 
 
 def test_order_loop_target_follows_the_build(tune_path):
@@ -232,15 +233,17 @@ def test_order_loop_target_follows_the_build(tune_path):
     song = pydmcsid.read(tune_path)
     if song.variant() not in ("v37", "v1d"):
         pytest.skip("covered on the v37/v1d bodies")
-    player = DmcPlayer(song)
-    jump = order_rule(player.song.facets(), song.variant()) == "order_jump"
+    jump = order_rule(song.facets(), song.variant()) == "order_jump"
     ordered = [0x00, 0x01, 0xFF, 0x01] if jump else [0x00, 0x01, 0xFF]
-    mem, layout = _run_routine(
-        song, "voice[0].orderwalk", player.memory, _order_list(ordered, 2)
-    )
-    number = 1 if jump else 0
-    pointer = mem[layout["patlo"] + number] | (mem[layout["pathi"] + number] << 8)
-    assert mem[layout["zp"]] | (mem[layout["zp"] + 1] << 8) == pointer
+    end = 0x7F if song.variant() == "v1d" else 0xFF
+    player = _row_player(song, ordered, 2)
+    layout = player.layout
+    for number, at, duration in ((0, 0x0900, 3), (1, 0x0910, 5)):
+        player._mem[at : at + 3] = bytes((0x80 | duration, 0x30, end))
+        player._mem[layout["patlo"] + number] = at & 0xFF
+        player._mem[layout["pathi"] + number] = at >> 8
+    player.play_frame()
+    assert player.state("voice[0].dur") == (5 if jump else 3)
 
 
 def _corrupt(song):

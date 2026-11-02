@@ -235,3 +235,4 @@ core.[0-9]*
 # Local agent worktrees and regression dumps
 .claude/
 .regress/
+.gate/

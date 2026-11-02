@@ -16,7 +16,6 @@ from lark import Token, Transformer
 from pysidtracker.bytegrammar import ByteGrammar, Parsed
 from pysidtracker.image import SidImage, require_ram
 
-from pydmcsid import constants
 from pydmcsid.errors import DmcParseError
 
 INSTRUMENT_SIZE = 11
@@ -161,18 +160,13 @@ _ORDER_KINDS = ("ORDER_PATTERN", "ORDER_TRANSPOSE")
 class Engine:
     """Where one body generation keeps the streams its voices walk.
 
-    ``order_ptr`` are the authored addresses of the per-voice order-list pointer
-    low/high cells, ``order_index`` and ``pattern_index`` those of the per-voice
-    order and pattern cursors; ``pattern_lo``/``pattern_hi``/``instrument_base``
-    name the layout fields holding the pattern-pointer and instrument tables.
+    ``pattern_lo``/``pattern_hi``/``instrument_base`` name the layout fields holding the
+    pattern-pointer and instrument tables.
     """
 
     pattern: str
     instrument: str
     instrument_size: int
-    order_ptr: Tuple[int, int]
-    order_index: int
-    pattern_index: int
     pattern_lo: str
     pattern_hi: str
     instrument_base: str
@@ -183,9 +177,6 @@ _V37 = Engine(
     "pattern37",
     "instrument",
     INSTRUMENT_SIZE,
-    (constants.ORDER_PTR_LO, constants.ORDER_PTR_HI),
-    0x1726,
-    0x1729,
     "patlo",
     "pathi",
     "instr",
@@ -198,9 +189,6 @@ ENGINES = {
         "pattern_a1",
         "instrument8",
         8,
-        (0x17CF, 0x17D2),
-        0x17D5,
-        0x17D8,
         "patlo",
         "pathi",
         "inst",
@@ -210,9 +198,6 @@ ENGINES = {
         "pattern95",
         "instrument8",
         8,
-        (0x17D9, 0x17DC),
-        0x17DF,
-        0x17E2,
         "patlo",
         "pathi",
         "inst",
