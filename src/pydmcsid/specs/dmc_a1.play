@@ -1,495 +1,588 @@
+// The DMC $a1 engine. A call counts the tempo down (the first calls after the init count a start-up
+// delay instead); on a row each voice counts its note's duration down and, out of rows, reads the
+// next note: the orderlist names a pattern ($FF jumps, $FD and $FC transpose, $FE ends the voice),
+// the pattern's commands set duration, instrument, slide and the volume and filter state until a
+// note, a rest or a slide ends the row. A note starts the sound on the next call; from then on every
+// call steps the instrument's pulse and filter programs, then slides or vibrates and plays the wave.
+// The player's other entries run one voice's steady call, its volume fade and wave step, or its wave
+// step alone, for the voice in X.
 spec dmc_a1;
 
 layout {
-  base, sid, patlo, pathi, inst, wtctrl, wtarg, pwa, pwb, filta, filtb: addr;
-  freqlo, freqhi, zp: addr;
+  patlo, pathi, inst, wtctrl, wtarg, pwa, pwb, filta, filtb, freqlo, freqhi, tempo: addr;
+  order_lo, order_hi: addr;
   rel_clears_sr: flag;
+  call: byte;
+  wild_freq_lo, wild_freq_hi: list;
+  init_tempo_ctr, init_mode, init_cutoff, init_fade_up, init_fade_down, init_vib_shift,
+  init_vol, init_delta, init_filt_pos, init_fc, init_sl, init_filt_start, init_sr_tmp,
+  init_pw_start, init_startup, init_cutoff_ovr: byte;
+  init_active, init_key, init_seqpos, init_patpos, init_left, init_dur, init_instr, init_trans,
+  init_sus_over, init_tie, init_slide_speed, init_slide_to, init_wave_pos, init_pw_pos,
+  init_vib_delay, init_vib_period, init_vib, init_mark, init_fresh, init_freq, init_ctrl,
+  init_gate, init_term, init_pw, init_pw_cnt, init_vib_grown, init_vib_dir, init_vib_pos,
+  init_slide: list;
 }
 
-cell sid: u8[32] @ L.sid out;
-cell pat_lo: u8[0x100] @ L.patlo ro;
-cell pat_hi: u8[0x100] @ L.pathi ro;
-cell inst: u8[0x110] @ L.inst ro;
-cell wt_ctrl: u8[0x100] @ L.wtctrl ro;
-cell wt_arg: u8[0x100] @ L.wtarg ro;
-cell pw_a: u8[0x100] @ L.pwa ro;
-cell pw_b: u8[0x100] @ L.pwb ro;
-cell filt_a: u8[0x100] @ L.filta ro;
-cell filt_b: u8[0x100] @ L.filtb ro;
-cell freq_lo: u8[0x100] @ L.freqlo ro;
-cell freq_hi: u8[0x100] @ L.freqhi ro;
+const PLAY = 0;
+const STEADY = 1;
+const FADE = 2;
+const WAVE = 3;
+const CUTOFF_LO = 0x15;
+const CUTOFF_HI = 0x16;
+const ROUTE = 0x17;
+const MODE_VOL = 0x18;
 
-cell zp_lo: u8 @ L.zp scratch;
-cell zp_hi: u8 @ L.zp + 1 scratch;
-cell voice_on: u8[3] @ L.base + 0x006;
-cell sid_off: u8[3] @ L.base + 0x009;
-cell note: u8[3] @ L.base + 0x00f;
-cell tempo_reload: u8 @ L.base + 0x012;
-cell tempo_ctr: u8 @ L.base + 0x013;
-cell vol_hi: u8 @ L.base + 0x015;
-cell cutoff_hi: u8 @ L.base + 0x016;
-cell cutoff_lo: u8 @ L.base + 0x017;
-cell fade_up: u8 @ L.base + 0x018;
-cell fade_down: u8 @ L.base + 0x019;
-cell vib_shift: u8 @ L.base + 0x01a;
-cell volume: u8 @ L.base + 0x01b;
-cell vol_frac: u8 @ L.base + 0x01c;
-cell scratch_lo: u8 @ L.base + 0x01e;
-cell scratch_hi: u8 @ L.base + 0x01f;
-cell order_lo: u8[3] @ L.base + 0x7cf;
-cell order_hi: u8[3] @ L.base + 0x7d2;
-cell order_idx: u8[3] @ L.base + 0x7d5;
-cell pat_cursor: u8[3] @ L.base + 0x7d8;
-cell dur_ctr: u8[3] @ L.base + 0x7db;
-cell dur: u8[3] @ L.base + 0x7de;
-cell c_inst: u8[3] @ L.base + 0x7e1;
-cell transpose: u8[3] @ L.base + 0x7e4;
-cell sus_over: u8[3] @ L.base + 0x7e7;
-cell tie: u8[3] @ L.base + 0x7ea;
-cell slide_speed: u8[3] @ L.base + 0x7ed;
-cell slide_tgt: u8[3] @ L.base + 0x7f0;
-cell wt_pos: u8[3] @ L.base + 0x7f3;
-cell pw_pos: u8[3] @ L.base + 0x7f6;
-cell filt_pos: u8 @ L.base + 0x7f9;
-cell vib_delay: u8[3] @ L.base + 0x7fc;
-cell vib_period: u8[3] @ L.base + 0x7ff;
-cell vib_lo: u8[3] @ L.base + 0x802;
-cell vib_hi: u8[3] @ L.base + 0x805;
-cell f1808: u8[3] @ L.base + 0x808;
-cell newnote: u8[3] @ L.base + 0x80b;
-cell freq_l: u8[3] @ L.base + 0x80e;
-cell freq_h: u8[3] @ L.base + 0x811;
-cell ctrl: u8[3] @ L.base + 0x814;
-cell gate: u8[3] @ L.base + 0x817;
-cell term: u8[3] @ L.base + 0x81d;
-cell pw_lo: u8[3] @ L.base + 0x820;
-cell pw_hi: u8[3] @ L.base + 0x823;
-cell pwc_lo: u8[3] @ L.base + 0x826;
-cell pwc_hi: u8[3] @ L.base + 0x829;
-cell f182c: u8[3] @ L.base + 0x82c;
-cell f182f: u8[3] @ L.base + 0x82f;
-cell f1832: u8[3] @ L.base + 0x832;
-cell slide_lo: u8[3] @ L.base + 0x835;
-cell slide_hi: u8[3] @ L.base + 0x838;
-cell fc_lo: u8 @ L.base + 0x83b;
-cell fc_hi: u8 @ L.base + 0x83c;
-cell sl_lo: u8 @ L.base + 0x83d;
-cell sl_hi: u8 @ L.base + 0x83e;
-cell sr_tmp: u8 @ L.base + 0x840;
-cell filt_start: u8 @ L.base + 0x83f;
-cell pw_start: u8 @ L.base + 0x841;
-cell startup: u8 @ L.base + 0x842;
-cell cutoff_ovr: u8 @ L.base + 0x843;
+event order_byte: note;
+event pattern_byte: note;
+event pattern_end: note;
+
+cell sid: u8[0x19] @ 0xD400 out;
+
+cell order_ptr: u16[3] @ (L.order_lo, L.order_hi) ro;
+cell pat_ptr: u16[256] @ (L.patlo, L.pathi) ro;
+table instrument @ L.inst stride 8 {
+  ad: u8; sr: u8; wave: u8; pulse: u8; filter: u8; vib_delay: u8; vib_period: u8; vib: u8;
+}
+cell speed: u8 @ L.tempo ro;
+
+cell freq_lo: u8[256] @ L.freqlo ro;
+cell freq_hi: u8[256] @ L.freqhi ro;
+cell wave_ctrl: u8[256] @ L.wtctrl ro;
+cell wave_arg: u8[256] @ L.wtarg ro;
+cell pulse_prog: u16[256] @ (L.pwb, L.pwa) ro;
+cell filter_prog: u16[256] @ (L.filtb, L.filta) ro;
+
+state wild_lo: u8[256] ro = L.wild_freq_lo;
+state wild_hi: u8[256] ro = L.wild_freq_hi;
+
+state tempo_ctr: u8 = L.init_tempo_ctr;
+state mode: u8 = L.init_mode;
+state cutoff: u16 = L.init_cutoff;
+state fade_up: u8 = L.init_fade_up;
+state fade_down: u8 = L.init_fade_down;
+state vib_shift: u8 = L.init_vib_shift;
+state vol: u16 = L.init_vol;
+state delta: u16 = L.init_delta;
+state filt_pos: u8 = L.init_filt_pos;
+state fc: u16 = L.init_fc;
+state sl: u16 = L.init_sl;
+state filt_start: u8 = L.init_filt_start;
+state sr_tmp: u8 = L.init_sr_tmp;
+state pw_start: u8 = L.init_pw_start;
+state startup: u8 = L.init_startup;
+state cutoff_ovr: u8 = L.init_cutoff_ovr;
 
 machine clock {
   signal run: bool = true;
+  signal row: bool = false;
+  counter beat: tempo_ctr { on frame -= 1; reload speed; wrap when neg(tempo_ctr - 1); }
+
   step {
-    if startup != 0 { startup -= 1; run := false; return; }
-    tempo_ctr -= 1;
-    if neg(tempo_ctr) { tempo_ctr := tempo_reload; }
+    if startup != 0 {
+      startup -= 1;
+      run := false;
+    } else {
+      fire frame;
+      row := speed == tempo_ctr;
+    }
   }
 }
 
 machine voice[x in 0..3] {
-  step {
-    if !clock.run { return; }
-    if tempo_reload == tempo_ctr && voice_on[x] != 0 {
-      dur_ctr[x] -= 1;
-      if dur_ctr[x] == 0 { advance(); return; }
+  record chip @ 0xD400 stride 7 { out_freq: u16; out_pw: u12; out_ctrl: u8; out_ad: u8; out_sr: u8; }
+
+  state active: u8 = L.init_active[x];
+  state key: u8 = L.init_key[x];
+  state seqpos: u8 = L.init_seqpos[x];
+  state patpos: u8 = L.init_patpos[x];
+  state left: u8 = L.init_left[x];
+  state dur: u8 = L.init_dur[x];
+  state instr: u8 = L.init_instr[x];
+  state trans: u8 = L.init_trans[x];
+  state down: u8 = 0;
+  state sus_over: u8 = L.init_sus_over[x];
+  state tie: u8 = L.init_tie[x];
+  state slide_speed: u8 = L.init_slide_speed[x];
+  state slide_to: u8 = L.init_slide_to[x];
+  state wave_pos: u8 = L.init_wave_pos[x];
+  state pw_pos: u8 = L.init_pw_pos[x];
+  state vib_delay: u8 = L.init_vib_delay[x];
+  state vib_period: u8 = L.init_vib_period[x];
+  state vib: u16 = L.init_vib[x];
+  state mark: u8 = L.init_mark[x];
+  state fresh: u8 = L.init_fresh[x];
+  state freq: u16 = L.init_freq[x];
+  state ctrl: u8 = L.init_ctrl[x];
+  state gate: u8 = L.init_gate[x];
+  state term: u8 = L.init_term[x];
+  state pw: u16 = L.init_pw[x];
+  state pw_cnt: u16 = L.init_pw_cnt[x];
+  state vib_grown: u8 = L.init_vib_grown[x];
+  state vib_dir: u8 = L.init_vib_dir[x];
+  state vib_pos: u8 = L.init_vib_pos[x];
+  state slide: u16 = L.init_slide[x];
+  state a1: u8 = 0;
+  state a2: u8 = 0;
+  state a3: u8 = 0;
+  signal read: bool = false;
+
+  counter remaining: left { on row -= 1; wrap when left == 1 -> note; }
+
+  cursor orderlist {
+    table @ order_ptr[x] width 2;
+    pos seqpos;
+    on order_byte step;
+    match c0 {
+      0xFF => jump(c1);
+      0xFD => value(trans = c1, down = 0) take 2;
+      0xFC => value(trans = 0, down = c1) take 2;
+      _ => stop;
     }
-    steady();
   }
 
-  proc advance() {
-    let optr = word(order_lo[x], order_hi[x]);
-    stream ov = optr @ 0 grammar "pydmcsid.grammar:GRAMMAR:order_x";
-    let y = order_idx[x];
-    let v = mem[optr + u16(y)];
-    if v < 0x80 { pattern_setup(v); return; }
-    if v == 0xFF {
-      y := y + 1;
-      v := mem[optr + u16(y)];
-      order_idx[x] := v;
-      y := v;
-      v := mem[optr + u16(y)];
-    } elif v == 0xFE {
-      voice_on[x] := 0;
-      wt_output();
+  cursor pattern {
+    table @ pat_ptr[orderlist.c0] width 4;
+    pos patpos;
+    on pattern_byte step; on pattern_end reset;
+    match c0 {
+      0x00..0x7F, 0xFE, 0xF4, 0xF5 => end take 1;
+      0xF1, 0xF2, 0xF9 => end take 2 then a1 = c1;
+      0xFA => end take 3 then a1 = c1, a2 = c2;
+      0xFB => end take 3 then a1 = c1, a2 = c2, a3 = c3;
+      0xFD => value(dur = c1) take 2;
+      0xFC => value(instr = c1) take 2;
+      0xF3 => value(sus_over = c1) take 2;
+      0xF8 => value(cutoff_ovr = c1) take 2;
+      0xF7 => value(fade_up = c1) take 2;
+      0xF6 => value(fade_down = c1) take 2;
+      _ => value() take 2;
+    }
+  }
+
+  handler next_entry on pattern_end {
+    seqpos += 1;
+    sus_over := 0;
+    tie := 0;
+  }
+
+  proc variable(code: u8, memory: u8) -> u8 {
+    for k in 0..3 {
+      if code & 3 == k {
+        match code >> 2 {
+          1 => return tempo_ctr;
+          2 => return mode;
+          3 => return lo(cutoff);
+          4 => return hi(cutoff);
+          5 => return fade_up;
+          6 => return fade_down;
+          7 => return vib_shift;
+          8 => return lo(vol);
+          9 => return hi(vol);
+          10 => return lo(delta);
+          11 => return hi(delta);
+          12 => return filt_pos;
+          13 => return lo(fc);
+          14 => return hi(fc);
+          15 => return lo(sl);
+          16 => return hi(sl);
+          17 => return filt_start;
+          18 => return sr_tmp;
+          19 => return pw_start;
+          20 => return startup;
+          21 => return cutoff_ovr;
+          22 => return voice[k].active;
+          23 => return voice[k].key;
+          24 => return voice[k].seqpos;
+          25 => return voice[k].patpos;
+          26 => return voice[k].left;
+          27 => return voice[k].dur;
+          28 => return voice[k].instr;
+          29 => return voice[k].trans - voice[k].down;
+          30 => return voice[k].sus_over;
+          31 => return voice[k].tie;
+          32 => return voice[k].slide_speed;
+          33 => return voice[k].slide_to;
+          34 => return voice[k].wave_pos;
+          35 => return voice[k].pw_pos;
+          36 => return voice[k].vib_delay;
+          37 => return voice[k].vib_period;
+          38 => return lo(voice[k].vib);
+          39 => return hi(voice[k].vib);
+          40 => return voice[k].mark;
+          41 => return voice[k].fresh;
+          42 => return lo(voice[k].freq);
+          43 => return hi(voice[k].freq);
+          44 => return voice[k].ctrl;
+          45 => return voice[k].gate;
+          46 => return voice[k].term;
+          47 => return lo(voice[k].pw);
+          48 => return hi(voice[k].pw);
+          49 => return lo(voice[k].pw_cnt);
+          50 => return hi(voice[k].pw_cnt);
+          51 => return voice[k].vib_grown;
+          52 => return voice[k].vib_dir;
+          53 => return voice[k].vib_pos;
+          54 => return lo(voice[k].slide);
+          55 => return hi(voice[k].slide);
+          _ => return memory;
+        }
+      }
+    }
+    return memory;
+  }
+
+  proc pitch_lo(n: u8) -> u8 {
+    let b = variable(wild_lo[n], freq_lo[n]);
+    return b;
+  }
+
+  proc pitch_hi(n: u8) -> u8 {
+    let b = variable(wild_hi[n], freq_hi[n]);
+    return b;
+  }
+
+  proc set_pitch(n: u8) {
+    let low = pitch_lo(n);
+    freq := word(low, hi(freq));
+    let high = pitch_hi(n);
+    freq := word(low, high);
+  }
+
+  handler fetch on note {
+    read := true;
+    read_row();
+  }
+
+  proc read_row() {
+    let found = false;
+    while !found bound 64 {
+      react orderlist on order_byte() -> found;
+    }
+    if orderlist.c0 == 0xFE {
+      active := 0;
+      wave_output();
       return;
     }
-    if v == 0xFD {
-      y := y + 1;
-      order_idx[x] += 2;
-      transpose[x] := mem[optr + u16(y)];
-      y := y + 1;
-      v := mem[optr + u16(y)];
-    } elif v == 0xFC {
-      y := y + 1;
-      order_idx[x] += 2;
-      transpose[x] := (mem[optr + u16(y)] ^ 0xFF) + 1;
-      y := y + 1;
-      v := mem[optr + u16(y)];
-    }
-    pattern_setup(v);
-  }
-
-  proc pattern_setup(n: u8) {
-    patwalk(word(pat_lo[u16(n)], pat_hi[u16(n)]));
-  }
-
-  proc patwalk(p: u16) {
-    stream pv = p @ 0 grammar "pydmcsid.grammar:GRAMMAR:pattern_a1";
-    while true bound 1024 {
-      let y = pat_cursor[x];
-      let v = mem[p + u16(y)];
-      if v < 0x80 { note_row(p, v); return; }
-      elif v == 0xFD { dur[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xFC { c_inst[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xFE { pat_end_tail(p); return; }
-      elif v == 0xF4 { gate[x] ^= 1; pat_end_tail(p); return; }
-      elif v == 0xF5 { tie[x] ^= 0xFF; pat_cursor[x] += 1; }
-      elif v == 0xF3 { sus_over[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xFB {
-        slide_speed[x] := mem[p + u16(y + 1)];
-        note[x] := mem[p + u16(y + 2)] + transpose[x];
-        let tgt = mem[p + u16(y + 3)] + transpose[x];
-        slide_tgt[x] := tgt;
-        if tgt == 0 { pat_cursor[x] += 2; pat_end_tail(p); return; }
-        pat_cursor[x] += 3;
-        note_onset(p);
-        return;
+    let walking = true;
+    while walking bound 600 {
+      let done = false;
+      let row = 0;
+      while !done bound 300 {
+        row := pattern.c0;
+        react pattern on pattern_byte() -> done;
       }
-      elif v == 0xFA {
-        slide_speed[x] := mem[p + u16(y + 1)];
-        slide_tgt[x] := mem[p + u16(y + 2)] + transpose[x];
-        pat_cursor[x] += 2;
-        pat_end_tail(p);
-        return;
+      walking := false;
+      match row {
+        0xFE => rest();
+        0xF4 => { gate ^= 1; rest(); }
+        0xF5 => { tie ^= 0xFF; walking := true; }
+        0xF9 => { filter_command(a1); walking := true; }
+        0xF2 => { out_ad := a1; walking := true; }
+        0xF1 => { out_sr := a1; walking := true; }
+        0xFB => {
+          slide_speed := a1;
+          key := a2 + trans - down;
+          slide_to := a3 + trans - down;
+          if slide_to == 0 {
+            rest();
+          } else {
+            patpos += 1;
+            onset();
+          }
+        }
+        0xFA => {
+          slide_speed := a1;
+          slide_to := a2 + trans - down;
+          rest();
+        }
+        _ => {
+          key := row + trans - down;
+          if tie != 0 { rest(); } else { onset(); }
+        }
       }
-      elif v == 0xF9 {
-        let b = mem[p + u16(y + 1)];
-        if b == 0 { sid[0x17] := b; } else { sid[0x17] := (b << 4) | 0x04; }
-        vol_hi := b & 0xF0;
-        pat_cursor[x] += 2;
-      }
-      elif v == 0xF8 { cutoff_ovr := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xF2 { sid[u16(sid_off[x]) + 5] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xF1 { sid[u16(sid_off[x]) + 6] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xF7 { fade_up := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      elif v == 0xF6 { fade_down := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
-      else { pat_cursor[x] += 2; }
     }
   }
 
-  proc pat_end_tail(p: u16) {
-    dur_ctr[x] := dur[x];
-    pat_cursor[x] += 1;
-    let v = mem[p + u16(pat_cursor[x])];
-    term[x] := v;
-    if v == 0xFF {
-      pat_cursor[x] := 0;
-      sus_over[x] := 0;
-      tie[x] := 0;
-      order_idx[x] += 1;
+  proc filter_command(b: u8) {
+    sid[ROUTE] := ite(b == 0, 0, (b << 4) | 4);
+    mode := b & 0xF0;
+  }
+
+  proc rest() {
+    left := dur;
+    term := pattern.c0;
+    if term == 0xFF {
+      fire pattern_end;
     }
-    wt_output();
+    wave_output();
   }
 
-  proc note_row(p: u16, v: u8) {
-    note[x] := v + transpose[x];
-    if tie[x] != 0 { pat_end_tail(p); return; }
-    note_onset(p);
-  }
-
-  proc row_onset() {
-    note_onset(word(zp_lo, zp_hi));
-  }
-
-  proc note_onset(p: u16) {
-    let y = c_inst[x] << 3;
-    let ad = inst[u16(y)];
-    let sr = inst[u16(y) + 1];
-    let yv = u16(sid_off[x]);
-    if sus_over[x] != 0 {
-      sr_tmp := sus_over[x] << 4;
+  proc onset() {
+    let at = instr << 3;
+    let sr = instrument[at >> 3].sr;
+    if sus_over != 0 {
+      sr_tmp := sus_over << 4;
       sr := (sr & 0x0F) | sr_tmp;
     }
-    sid[yv + 6] := sr;
-    sid[yv + 5] := ad;
-    dur_ctr[x] := dur[x];
-    f1808[x] := 0;
-    sid[yv + 4] := 0x09;
-    newnote[x] := 0x09;
-    sid[yv] := 0;
-    sid[yv + 1] := 0;
-    pat_cursor[x] += 1;
-    let v = mem[p + u16(pat_cursor[x])];
-    term[x] := v;
-    if v == 0xFF {
-      pat_cursor[x] := 0;
-      sus_over[x] := 0;
-      tie[x] := 0;
-      order_idx[x] += 1;
+    out_sr := sr;
+    out_ad := instrument[at >> 3].ad;
+    left := dur;
+    mark := 0;
+    out_ctrl := 0x09;
+    fresh := 0x09;
+    out_freq := 0;
+    term := pattern.c0;
+    if term == 0xFF {
+      fire pattern_end;
     }
   }
 
-  proc steady() {
-    if newnote[x] != 0 { note_init(); return; }
-    tick();
-  }
-
-  proc note_init() {
-    newnote[x] := 0;
-    sid[0x18] := vol_hi | volume;
-    let y = c_inst[x] << 3;
-    vib_delay[x] := inst[u16(y) + 5];
-    vib_period[x] := inst[u16(y) + 6];
-    vib_shift := inst[u16(y) + 7] & 0x07;
-    wt_pos[x] := inst[u16(y) + 2];
-    let v = inst[u16(y) + 3];
-    pw_start := v;
-    if v != 0 { pw_pos[x] := v; }
-    v := inst[u16(y) + 4];
-    filt_start := v;
-    if v != 0 { filt_pos := v; }
-    wt_step(false);
-    gate[x] := 0xF7;
+  proc sound() {
+    let at = (instr << 3) >> 3;
+    fresh := 0;
+    sid[MODE_VOL] := mode | hi(vol);
+    vib_delay := instrument[at].vib_delay;
+    vib_period := instrument[at].vib_period;
+    vib_shift := instrument[at].vib & 7;
+    wave_pos := instrument[at].wave;
+    pw_start := instrument[at].pulse;
     if pw_start != 0 {
-      let yp = pw_pos[x];
-      if yp != 0 {
-        pw_hi[x] := pw_a[u16(yp)];
-        pw_lo[x] := pw_b[u16(yp)];
-        pwc_lo[x] := 0;
-        pwc_hi[x] := 0;
-        pw_pos[x] += 1;
-      }
+      pw_pos := pw_start;
+    }
+    filt_start := instrument[at].filter;
+    if filt_start != 0 {
+      filt_pos := filt_start;
+    }
+    wave_step(false);
+    gate := 0xF7;
+    if pw_start != 0 && pw_pos != 0 {
+      pw := pulse_prog[pw_pos];
+      pw_cnt := 0;
+      pw_pos += 1;
     }
     if filt_start != 0 {
-      let yf = filt_pos;
-      if cutoff_ovr != 0 { cutoff_hi := cutoff_ovr; cutoff_lo := 0; }
-      else { cutoff_hi := filt_a[u16(yf)]; cutoff_lo := filt_b[u16(yf)]; }
-      fc_lo := 0;
-      fc_hi := 0;
+      if cutoff_ovr != 0 {
+        cutoff := word(0, cutoff_ovr);
+      } else {
+        cutoff := filter_prog[filt_pos];
+      }
+      fc := 0;
       filt_pos += 1;
     }
-    f1808[x] := 0;
-    f182c[x] := 0;
-    f182f[x] := 0;
-    f1832[x] := 0;
-    slide_lo[x] := 0;
-    slide_hi[x] := 0;
-    vib_lo[x] := freq_hi[u16(note[x])];
-    vib_hi[x] := 0;
-    for k in 0..8 {
-      if vib_shift > k {
-        let c = vib_lo[x] >> 7;
-        vib_lo[x] := vib_lo[x] << 1;
-        vib_hi[x] := (vib_hi[x] << 1) | c;
-      }
-    }
+    mark := 0;
+    vib_grown := 0;
+    vib_dir := 0;
+    vib_pos := 0;
+    slide := 0;
+    let high = pitch_hi(key);
+    vib := u16(high) << vib_shift;
     output();
   }
 
-  proc wt_step(check_loop: bool) {
-    let y = wt_pos[x];
-    if check_loop && wt_ctrl[u16(y)] == 0x90 {
-      wt_pos[x] := wt_arg[u16(y)];
-      y := wt_pos[x];
+  proc modulate() {
+    if fresh != 0 {
+      sound();
+      return;
     }
-    let c = wt_ctrl[u16(y)];
-    ctrl[x] := c;
-    if c & 0x08 != 0 {
-      freq_h[x] := wt_arg[u16(y)];
-      freq_l[x] := 0;
+    pulse_program();
+    if x == 2 {
+      filter_program();
+    }
+    if slide_speed != 0 {
+      portamento();
     } else {
-      let yn = wt_arg[u16(y)] + note[x];
-      freq_l[x] := freq_lo[u16(yn)];
-      freq_h[x] := freq_hi[u16(yn)];
+      vibrato();
     }
-    wt_pos[x] += 1;
   }
 
-  proc tick() {
-    let y = pw_pos[x];
-    if pw_a[u16(y)] == 0x90 {
-      pw_pos[x] := pw_b[u16(y)];
-      y := pw_pos[x];
+  proc pulse_program() {
+    if hi(pulse_prog[pw_pos]) == 0x90 {
+      pw_pos := lo(pulse_prog[pw_pos]);
     }
-    scratch_hi := pw_a[u16(y)];
-    scratch_lo := pw_b[u16(y)];
-    y := y + 1;
-    let c = carry(pw_lo[x], scratch_lo);
-    pw_lo[x] += scratch_lo;
-    pw_hi[x] := pw_hi[x] + scratch_hi + u8(c);
-    let c2 = carry(pwc_lo[x], 1);
-    pwc_lo[x] += 1;
-    pwc_hi[x] += u8(c2);
-    if pwc_hi[x] == pw_a[u16(y)] && pwc_lo[x] == pw_b[u16(y)] {
-      pwc_lo[x] := 0;
-      pwc_hi[x] := 0;
-      pw_pos[x] += 2;
+    delta := pulse_prog[pw_pos];
+    pw += delta;
+    pw_cnt += 1;
+    if pw_cnt == pulse_prog[pw_pos + 1] {
+      pw_cnt := 0;
+      pw_pos += 2;
     }
-    if x == 2 { filter_sweep(); }
-    if slide_speed[x] != 0 { slide(); return; }
-    vibrato();
   }
 
-  proc filter_sweep() {
-    let y = filt_pos;
-    if filt_a[u16(y)] == 0x90 {
-      filt_pos := filt_b[u16(y)];
-      y := filt_pos;
+  proc filter_program() {
+    if hi(filter_prog[filt_pos]) == 0x90 {
+      filt_pos := lo(filter_prog[filt_pos]);
     }
-    scratch_hi := filt_a[u16(y)];
-    scratch_lo := filt_b[u16(y)];
-    y := y + 1;
-    let c = carry(cutoff_lo, scratch_lo);
-    cutoff_lo += scratch_lo;
-    cutoff_hi := cutoff_hi + scratch_hi + u8(c);
-    let c2 = carry(fc_lo, 1);
-    fc_lo += 1;
-    fc_hi += u8(c2);
-    if fc_hi == filt_a[u16(y)] && fc_lo == filt_b[u16(y)] {
-      fc_lo := 0;
-      fc_hi := 0;
+    delta := filter_prog[filt_pos];
+    cutoff += delta;
+    fc += 1;
+    if fc == filter_prog[filt_pos + 1] {
+      fc := 0;
       filt_pos += 2;
     }
   }
 
-  proc slide() {
-    let up = note[x] < slide_tgt[x];
+  proc portamento() {
+    let up = key < slide_to;
     if up {
-      let c = carry(slide_lo[x], slide_speed[x]);
-      slide_lo[x] += slide_speed[x];
-      slide_hi[x] += u8(c);
+      slide += u16(slide_speed);
     } else {
-      let b = borrow(slide_lo[x], slide_speed[x]);
-      slide_lo[x] -= slide_speed[x];
-      slide_hi[x] -= u8(b);
+      slide -= u16(slide_speed);
     }
-    let c3 = carry(freq_l[x], slide_lo[x]);
-    sl_lo := freq_l[x] + slide_lo[x];
-    let chi = freq_h[x] + slide_hi[x] + u8(c3);
-    sl_hi := chi;
-    let y = slide_tgt[x];
-    let tgt_hi = freq_hi[u16(y)];
-    if up {
-      if chi != tgt_hi { vol_fade_out(); } else { slide_reach(y); }
-      return;
+    sl := freq + slide;
+    let target_hi = pitch_hi(slide_to);
+    let target_lo = pitch_lo(slide_to);
+    let reached = hi(sl) == target_hi;
+    if !up {
+      reached := hi(sl) < target_hi || (hi(sl) == target_hi && lo(sl) < target_lo);
     }
-    if chi < tgt_hi || (chi == tgt_hi && sl_lo < freq_lo[u16(y)]) { slide_reach(y); }
-    else { vol_fade_out(); }
-  }
-
-  proc slide_reach(y: u8) {
-    note[x] := y;
-    freq_l[x] := freq_lo[u16(y)];
-    freq_h[x] := freq_hi[u16(y)];
-    slide_lo[x] := 0;
-    slide_hi[x] := 0;
-    slide_speed[x] := 0;
-    vibrato();
+    if reached {
+      key := slide_to;
+      set_pitch(slide_to);
+      slide := 0;
+      slide_speed := 0;
+      vibrato();
+    } else {
+      fade();
+      wave_output();
+    }
   }
 
   proc vibrato() {
-    if tie[x] != 0 {
-      slide_lo[x] := 0;
-      slide_hi[x] := 0;
-      vol_fade_out();
-      return;
+    if tie != 0 {
+      slide := 0;
+    } elif vib_period != 0 {
+      if vib_delay != 0 {
+        vib_delay -= 1;
+      } elif vib_dir == 0 {
+        slide += vib;
+        vib_pos += 1;
+        if vib_pos == vib_period {
+          vib_pos := 0;
+          vib_dir += 1;
+          if vib_grown == 0 {
+            vib := vib << 1;
+            vib_grown += 1;
+          }
+        }
+      } else {
+        slide -= vib;
+        vib_pos += 1;
+        if vib_pos == vib_period {
+          vib_pos := 0;
+          vib_dir -= 1;
+        }
+      }
     }
-    if vib_period[x] == 0 { vol_fade_out(); return; }
-    if vib_delay[x] != 0 { vib_delay[x] -= 1; vol_fade_out(); return; }
-    if f182f[x] == 0 {
-      let c = carry(slide_lo[x], vib_lo[x]);
-      slide_lo[x] += vib_lo[x];
-      slide_hi[x] := slide_hi[x] + vib_hi[x] + u8(c);
-      f1832[x] += 1;
-      if f1832[x] != vib_period[x] { vol_fade_out(); return; }
-      f1832[x] := 0;
-      f182f[x] += 1;
-      if f182c[x] != 0 { vol_fade_out(); return; }
-      let c2 = vib_lo[x] >> 7;
-      vib_lo[x] := vib_lo[x] << 1;
-      vib_hi[x] := (vib_hi[x] << 1) | c2;
-      f182c[x] += 1;
-      vol_fade_out();
-      return;
-    }
-    let b = borrow(slide_lo[x], vib_lo[x]);
-    slide_lo[x] -= vib_lo[x];
-    slide_hi[x] := slide_hi[x] - vib_hi[x] - u8(b);
-    f1832[x] += 1;
-    if f1832[x] != vib_period[x] { vol_fade_out(); return; }
-    f1832[x] := 0;
-    f182f[x] -= 1;
-    vol_fade_out();
+    fade();
+    wave_output();
   }
 
-  proc vol_fade_out() {
+  proc fade() {
     if fade_down != 0 {
-      let b = borrow(vol_frac, fade_down);
-      vol_frac -= fade_down;
-      volume -= u8(b);
-      if volume == 0 { fade_down := 0; }
+      vol -= u16(fade_down);
+      if hi(vol) == 0 {
+        fade_down := 0;
+      }
     }
     if fade_up != 0 {
-      let c = carry(vol_frac, fade_up);
-      vol_frac += fade_up;
-      volume += u8(c);
-      if volume == 0x0F { fade_up := 0; }
+      vol += u16(fade_up);
+      if hi(vol) == 0x0F {
+        fade_up := 0;
+      }
     }
-    sid[0x18] := volume | vol_hi;
-    wt_output();
+    sid[MODE_VOL] := hi(vol) | mode;
   }
 
-  proc wt_output() {
-    wt_step(true);
+  proc wave_step(running: bool) {
+    if running && wave_ctrl[wave_pos] == 0x90 {
+      wave_pos := wave_arg[wave_pos];
+    }
+    ctrl := wave_ctrl[wave_pos];
+    if ctrl & 8 != 0 {
+      freq := word(0, wave_arg[wave_pos]);
+    } else {
+      set_pitch(wave_arg[wave_pos] + key);
+    }
+    wave_pos += 1;
+  }
+
+  proc wave_output() {
+    wave_step(true);
     output();
   }
 
+  proc release() {
+    let held = tie != 0;
+    if term == 0xF5 {
+      held := !held;
+    }
+    if held {
+      return;
+    }
+    if left == 1 {
+      if L.rel_clears_sr {
+        out_sr := 0;
+      }
+      return;
+    }
+    if left == 2 && tempo_ctr == 0 {
+      gate := 0xF6;
+    }
+  }
+
   proc output() {
-    let yv = u16(sid_off[x]);
-    let t = term[x];
-    if t != 0xFE && t != 0xF4 && t != 0xFA && t != 0xF2 && t != 0xF1 { release(t); }
-    let c = carry(freq_l[x], slide_lo[x]);
-    sid[yv] := freq_l[x] + slide_lo[x];
-    sid[yv + 1] := freq_h[x] + slide_hi[x] + u8(c);
-    sid[yv + 2] := pw_lo[x];
-    sid[yv + 3] := pw_hi[x];
-    sid[yv + 4] := ctrl[x] & gate[x];
+    match term {
+      0xFE, 0xF4, 0xFA, 0xF2, 0xF1 => {}
+      _ => release();
+    }
+    out_freq := freq + slide;
+    out_pw := pw;
+    out_ctrl := ctrl & gate;
   }
 
-  proc release(t: u8) {
-    if t == 0xF5 {
-      if tie[x] != 0 { release_dur(); }
-      return;
+  step {
+    if L.call == PLAY {
+      if clock.run {
+        if clock.row && active != 0 {
+          fire row;
+        }
+        if !read {
+          modulate();
+        }
+      }
+    } elif cpu.x == x {
+      if L.call == STEADY {
+        modulate();
+      } elif L.call == FADE {
+        fade();
+        wave_output();
+      } else {
+        wave_output();
+      }
     }
-    if tie[x] != 0 { return; }
-    release_dur();
-  }
-
-  proc release_dur() {
-    if dur_ctr[x] == 1 {
-      if L.rel_clears_sr { sid[u16(sid_off[x]) + 6] := 0; }
-      return;
-    }
-    if dur_ctr[x] == 2 && tempo_ctr == 0 { gate[x] := 0xF6; }
   }
 }
 
 machine filter_out {
   step {
-    if !clock.run { return; }
-    sid[0x15] := cutoff_lo;
-    sid[0x16] := cutoff_hi;
+    if clock.run {
+      sid[CUTOFF_LO] := lo(cutoff);
+      sid[CUTOFF_HI] := hi(cutoff);
+    }
   }
 }
 
 schedule {
-  clock;
-  voice[0];
-  voice[1];
-  voice[2];
-  filter_out;
+  if L.call != PLAY {
+    voice[0];
+    voice[1];
+    voice[2];
+  } else {
+    clock;
+    voice[0];
+    voice[1];
+    voice[2];
+    filter_out;
+  }
 }

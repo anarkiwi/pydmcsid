@@ -12,13 +12,14 @@ from __future__ import annotations
 import dataclasses
 from functools import lru_cache
 from importlib import resources
-from typing import Any, Dict, Iterator, Tuple
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from pysidtracker.formats import SpecBinding
 from pysidtracker.playspec import parse as parse_spec
 
 from pydmcsid import constants
 from pydmcsid.errors import DmcFormatError
+from pydmcsid.variables import GENERATION_VARS, state_layout
 from pydmcsid.reader import Song, _operand, _play_body_ok, wrapper_body
 
 SPEC_FILES = {
@@ -125,6 +126,7 @@ def _binding_a1(song: Song) -> Dict[str, Any]:
     return {
         "base": song.base,
         "sid": SID_BASE,
+        "zp": operand(constants.A1_ZP_OP) & 0xFF,
         "patlo": operand(constants.A1_PATTERN_LO_OP),
         "pathi": operand(constants.A1_PATTERN_HI_OP),
         "inst": operand(constants.A1_INST_OP),
@@ -136,7 +138,9 @@ def _binding_a1(song: Song) -> Dict[str, Any]:
         "filtb": operand(constants.A1_FILT_B_OP),
         "freqlo": (song.base + constants.A1_FREQ_LO_REL) & 0xFFFF,
         "freqhi": (song.base + constants.A1_FREQ_HI_REL) & 0xFFFF,
-        "zp": operand(constants.A1_ZP_OP) & 0xFF,
+        "tempo": (song.base + constants.A1_TEMPO_REL) & 0xFFFF,
+        "order_lo": (song.base + constants.A1_ORDER_STORE_REL - 0x1000) & 0xFFFF,
+        "order_hi": (song.base + constants.A1_ORDER_STORE_REL - 0x1000 + 3) & 0xFFFF,
         "rel_clears_sr": int(song.facets()["release_sr"] == "clear"),
     }
 
@@ -148,6 +152,7 @@ def _binding95(song: Song) -> Dict[str, Any]:
     return {
         "base": song.base,
         "sid": SID_BASE,
+        "zp": operand(constants.N95_ZP_OP) & 0xFF,
         "patlo": operand(constants.N95_PATTERN_LO_OP),
         "pathi": operand(constants.N95_PATTERN_HI_OP),
         "inst": operand(constants.N95_INST_OP),
@@ -159,7 +164,9 @@ def _binding95(song: Song) -> Dict[str, Any]:
         "filtb": operand(constants.N95_FILT_B_OP),
         "freqlo": (song.base + constants.N95_FREQ_LO_REL) & 0xFFFF,
         "freqhi": (song.base + constants.N95_FREQ_HI_REL) & 0xFFFF,
-        "zp": operand(constants.N95_ZP_OP) & 0xFF,
+        "tempo": (song.base + constants.N95_RELOAD_SEED_REL) & 0xFFFF,
+        "order_lo": (song.base + constants.N95_ORDER_STORE_REL - 0x1000) & 0xFFFF,
+        "order_hi": (song.base + constants.N95_ORDER_STORE_REL - 0x1000 + 3) & 0xFFFF,
     }
 
 
@@ -180,9 +187,30 @@ def binding(song: Song, subtune: int = 0) -> Tuple[Dict[str, Any], Song, int]:
     return _binding85(song, generation in V1D_BODIES), song, subtune
 
 
+PLAY_CALL, STEADY_CALL, FADE_CALL, WAVE_CALL = range(4)
+
+# The player's routines a tune's own code may call for one voice (X): offset from the base and
+# what the routine does.
+VOICE_CALLS = {
+    "n95": {constants.N95_WAVE_REL: WAVE_CALL},
+    "a1": {
+        constants.A1_STEADY_REL: STEADY_CALL,
+        constants.A1_FADE_REL: FADE_CALL,
+        constants.A1_WAVE_REL: WAVE_CALL,
+    },
+}
+
+
+def voice_calls(song: Song) -> Dict[int, int]:
+    """``{address: call}`` of the routines of the song's body that run for the voice in X."""
+    calls = VOICE_CALLS.get(song.variant(), {})
+    return {(song.base + rel) & 0xFFFF: call for rel, call in calls.items()}
+
+
 def body_entries(song: Song) -> Iterator[int]:
     """The addresses a play call can enter the resident play body at."""
     mem, base = song.mem, song.base
+    yield from voice_calls(song)
     jump = (mem[base + 4] | (mem[base + 5] << 8)) & 0xFFFF
     reorganised = {"a1": constants.DMC_PLAY_A1_REL, "n95": constants.DMC_PLAY_95_REL}
     if song.variant() in reorganised:
@@ -203,9 +231,19 @@ def spec_binding(song: Song, subtune: int = 0) -> SpecBinding:
     """
     layout, body, _ = binding(song, subtune)
     entries = frozenset(body_entries(body))
+    generation = body.variant()
+
+    calls = voice_calls(body)
+
+    def bind(view, entry):
+        if generation in GENERATION_VARS:
+            states = state_layout(generation, view, body.base, layout)
+            return {**layout, **states, "call": calls.get(entry, PLAY_CALL)}
+        return layout
+
     return SpecBinding(
-        spec(body.variant()),
-        lambda view, entry: layout,
+        spec(generation),
+        bind,
         bytes(song.mem[song.load : song.load + song.image_len]),
         entries=lambda view: entries,
         subtune=subtune,
