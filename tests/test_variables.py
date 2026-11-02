@@ -11,7 +11,6 @@ from pydmcsid.variables import (
     N95,
     PLAIN,
     VOICE_OFFSETS,
-    VOICE_OFFSETS,
     aliases,
     byte,
     dmc,
