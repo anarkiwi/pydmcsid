@@ -39,7 +39,7 @@ cell scratch_hi: u8 @ L.base + 0x01f;
 cell order_lo: u8[3] @ L.base + 0x7cf;
 cell order_hi: u8[3] @ L.base + 0x7d2;
 cell order_idx: u8[3] @ L.base + 0x7d5;
-cell cursor: u8[3] @ L.base + 0x7d8;
+cell pat_cursor: u8[3] @ L.base + 0x7d8;
 cell dur_ctr: u8[3] @ L.base + 0x7db;
 cell dur: u8[3] @ L.base + 0x7de;
 cell c_inst: u8[3] @ L.base + 0x7e1;
@@ -140,29 +140,29 @@ machine voice[x in 0..3] {
   proc patwalk(p: u16) {
     stream pv = p @ 0 grammar "pydmcsid.grammar:GRAMMAR:pattern_a1";
     while true bound 1024 {
-      let y = cursor[x];
+      let y = pat_cursor[x];
       let v = mem[p + u16(y)];
       if v < 0x80 { note_row(p, v); return; }
-      elif v == 0xFD { dur[x] := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      elif v == 0xFC { c_inst[x] := mem[p + u16(y + 1)]; cursor[x] += 2; }
+      elif v == 0xFD { dur[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      elif v == 0xFC { c_inst[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
       elif v == 0xFE { pat_end_tail(p); return; }
       elif v == 0xF4 { gate[x] ^= 1; pat_end_tail(p); return; }
-      elif v == 0xF5 { tie[x] ^= 0xFF; cursor[x] += 1; }
-      elif v == 0xF3 { sus_over[x] := mem[p + u16(y + 1)]; cursor[x] += 2; }
+      elif v == 0xF5 { tie[x] ^= 0xFF; pat_cursor[x] += 1; }
+      elif v == 0xF3 { sus_over[x] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
       elif v == 0xFB {
         slide_speed[x] := mem[p + u16(y + 1)];
         note[x] := mem[p + u16(y + 2)] + transpose[x];
         let tgt = mem[p + u16(y + 3)] + transpose[x];
         slide_tgt[x] := tgt;
-        if tgt == 0 { cursor[x] += 2; pat_end_tail(p); return; }
-        cursor[x] += 3;
+        if tgt == 0 { pat_cursor[x] += 2; pat_end_tail(p); return; }
+        pat_cursor[x] += 3;
         note_onset(p);
         return;
       }
       elif v == 0xFA {
         slide_speed[x] := mem[p + u16(y + 1)];
         slide_tgt[x] := mem[p + u16(y + 2)] + transpose[x];
-        cursor[x] += 2;
+        pat_cursor[x] += 2;
         pat_end_tail(p);
         return;
       }
@@ -170,24 +170,24 @@ machine voice[x in 0..3] {
         let b = mem[p + u16(y + 1)];
         if b == 0 { sid[0x17] := b; } else { sid[0x17] := (b << 4) | 0x04; }
         vol_hi := b & 0xF0;
-        cursor[x] += 2;
+        pat_cursor[x] += 2;
       }
-      elif v == 0xF8 { cutoff_ovr := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      elif v == 0xF2 { sid[u16(sid_off[x]) + 5] := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      elif v == 0xF1 { sid[u16(sid_off[x]) + 6] := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      elif v == 0xF7 { fade_up := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      elif v == 0xF6 { fade_down := mem[p + u16(y + 1)]; cursor[x] += 2; }
-      else { cursor[x] += 2; }
+      elif v == 0xF8 { cutoff_ovr := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      elif v == 0xF2 { sid[u16(sid_off[x]) + 5] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      elif v == 0xF1 { sid[u16(sid_off[x]) + 6] := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      elif v == 0xF7 { fade_up := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      elif v == 0xF6 { fade_down := mem[p + u16(y + 1)]; pat_cursor[x] += 2; }
+      else { pat_cursor[x] += 2; }
     }
   }
 
   proc pat_end_tail(p: u16) {
     dur_ctr[x] := dur[x];
-    cursor[x] += 1;
-    let v = mem[p + u16(cursor[x])];
+    pat_cursor[x] += 1;
+    let v = mem[p + u16(pat_cursor[x])];
     term[x] := v;
     if v == 0xFF {
-      cursor[x] := 0;
+      pat_cursor[x] := 0;
       sus_over[x] := 0;
       tie[x] := 0;
       order_idx[x] += 1;
@@ -222,11 +222,11 @@ machine voice[x in 0..3] {
     newnote[x] := 0x09;
     sid[yv] := 0;
     sid[yv + 1] := 0;
-    cursor[x] += 1;
-    let v = mem[p + u16(cursor[x])];
+    pat_cursor[x] += 1;
+    let v = mem[p + u16(pat_cursor[x])];
     term[x] := v;
     if v == 0xFF {
-      cursor[x] := 0;
+      pat_cursor[x] := 0;
       sus_over[x] := 0;
       tie[x] := 0;
       order_idx[x] += 1;
