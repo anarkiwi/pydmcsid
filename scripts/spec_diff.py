@@ -12,7 +12,7 @@ from pysidtracker import find_format
 from pysidtracker.playspec import load
 
 
-def player(raw: bytes, path: str, subtune):
+def player(raw: bytes, path: str):
     """The format's spec player for the tune with the spec file at ``path``."""
     fmt = find_format(raw)
     alt = load(path)
@@ -30,7 +30,7 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=3000)
     args = parser.parse_args()
     raw = Path(args.tune).read_bytes()
-    old, new = player(raw, args.old, None), player(raw, args.new, None)
+    old, new = player(raw, args.old), player(raw, args.new)
     for call in range(args.frames):
         old.play_frame()
         new.play_frame()

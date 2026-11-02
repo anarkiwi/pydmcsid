@@ -40,15 +40,16 @@ def calls(raw: bytes, frames: int):
     seen = collections.Counter()
     player.play_frame()
     mpu = player._mpu  # pylint: disable=protected-access
-    last = [0]
+    last = [0, 0]
+    mem = mpu.memory
     orig = mpu.step
 
     def step():
         pc = mpu.pc
         inside = lo <= pc < hi
-        if inside and not lo <= last[0] < hi:
+        if inside and not lo <= last[0] < hi and last[1] in (0x20, 0x4C):
             seen[(pc - song.base, mpu.x)] += 1
-        last[0] = pc
+        last[:] = [pc, mem[pc]]
         return orig()
 
     mpu.step = step

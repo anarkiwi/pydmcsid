@@ -9,6 +9,8 @@ on (``alias`` ids, 1-based in table order, stated by the spec's ``variable`` pro
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from pydmcsid.errors import DmcFormatError
+
 
 @dataclass(frozen=True)
 class Var:
@@ -136,14 +138,115 @@ A1 = (
     word("slide", 0x835, 0x838),
 )
 
-GENERATION_VARS: Dict[str, Tuple[Var, ...]] = {"n95": N95, "a1": A1}
+VARIABLES: Dict[str, Tuple[Var, ...]] = {"n95": N95, "a1": A1}
 
-# For each generation, the tables a read may run past the end of: the layout field of the
-# list that names the variables there, the layout field of the table's address and its size.
+
+def dmc(
+    c_note: int, c_inst: int, g_filt: int, g_vib: int, g_bend: int
+) -> Tuple[Var, ...]:
+    """The variables of the init-$37, init-$1d and $94a bodies; the note cells' work-area
+    offsets are the build's."""
+    return (
+        byte("tempo_ctr", 0x718, False),
+        byte("fstep", 0x719, False),
+        byte("fdwell", 0x71A, False),
+        byte("fbase", 0x71B, False),
+        byte("cutoff", 0x71C, False),
+        byte("floop", 0x71D, False),
+        byte("fgoal", 0x71E, False),
+        byte("scratch", 0x71F, False),
+        byte("sweep_voice", 0x720, False),
+        byte("fstep_inc", 0x721, False),
+        byte("fstep_dwell", 0x722, False),
+        byte("filt_hi", 0x723, False),
+        word("sum", 0x724, 0x725, False),
+        byte("g_filt", g_filt, False),
+        byte("g_vib", g_vib, False),
+        byte("g_bend", g_bend, False),
+        byte("active", 0x00C),
+        byte("gate", 0x00F),
+        byte("key", c_note),
+        byte("instr", c_inst),
+        byte("seqpos", 0x726),
+        byte("patpos", 0x729),
+        byte("trans", 0x72C),
+        word("freq", 0x72F, 0x732),
+        word("bend", 0x735, 0x738),
+        byte("left", 0x73B),
+        byte("dur", 0x73E),
+        byte("glide", 0x741),
+        byte("glide_from", 0x744),
+        byte("glide_to", 0x747),
+        byte("fresh", 0x74A),
+        byte("inst_off", 0x74D),
+        word("pw", 0x750, 0x753),
+        byte("pw_min", 0x756),
+        byte("pw_max", 0x759),
+        byte("pw_step", 0x75C),
+        byte("pw_base", 0x75F),
+        byte("pw_phase", 0x762),
+        byte("pw_down", 0x765),
+        byte("tri_down", 0x768),
+        byte("tri_count", 0x76B),
+        byte("tri_stage", 0x76E),
+        byte("delay", 0x771),
+        byte("tri_period", 0x774),
+        byte("rate", 0x777),
+        byte("wave_pos", 0x77A),
+        byte("flags", 0x77D),
+        byte("ctrl", 0x780),
+        byte("arp_key", 0x783),
+        byte("restart", 0x786),
+        byte("spare", 0x789),
+        byte("tri_accel", 0x78C),
+        word("tri", 0x792, 0x795),
+        word("lfo", 0x798, 0x79B),
+        byte("legato", 0x7B0),
+        byte("sus_over", 0x7B3),
+    )
+
+
+# For each generation, the tables a read may run past the end of: the layout field of the list
+# that names the variable at each byte, the layout field of the table's address and its size.
 WINDOWS: Dict[str, Tuple[Tuple[str, str, int], ...]] = {
     "n95": (("wild_freq_lo", "freqlo", 256), ("wild_freq_hi", "freqhi", 256)),
     "a1": (("wild_freq_lo", "freqlo", 256), ("wild_freq_hi", "freqhi", 256)),
+    "dmc": (
+        ("wild_freq_lo", "freqlo", 256),
+        ("wild_freq_hi", "freqhi", 256),
+        ("wild_instr", "instr", 0x110),
+        ("wild_pwtab", "pwtab", 256),
+    ),
 }
+
+# The tables whose reads the specs state directly; a variable lying within one is not stated.
+PLAIN: Dict[str, Tuple[Tuple[str, int], ...]] = {
+    "n95": tuple(
+        (name, size)
+        for name, size in (
+            ("patlo", 256),
+            ("pathi", 256),
+            ("inst", 256),
+            ("wtctrl", 256),
+            ("wtarg", 256),
+            ("pwa", 256),
+            ("pwb", 256),
+            ("filta", 256),
+            ("filtb", 256),
+        )
+    ),
+}
+PLAIN["a1"] = PLAIN["n95"]
+PLAIN["dmc"] = (
+    ("patlo", 256),
+    ("pathi", 256),
+    ("arp_ctrl", 256),
+    ("arp_note", 256),
+    ("filt_ctrl", 0x110),
+    ("step_lo", 256),
+    ("step_hi", 256),
+    ("vibseed", 256),
+)
 
 
 def initial(var: Var, mem, base: int) -> object:
@@ -181,13 +284,31 @@ def wild_codes(
     return code
 
 
+# Where each generation keeps the voices' SID register offsets, which the specs fix at 0, 7, 14.
+VOICE_OFFSETS = {"n95": 0x00C, "a1": 0x009, "dmc": 0x70D}
+
+
 def state_layout(
-    generation: str, mem, base: int, layout: Dict[str, int]
+    generation: str,
+    variables: Tuple[Var, ...],
+    mem,
+    base: int,
+    layout: Dict[str, int],
 ) -> Dict[str, object]:
     """The binding fields that carry the player's variables: ``init_<name>`` the values the
     init left in ``mem`` and, for each table a read may run past, the variable at each byte.
+
+    Raises:
+      DmcFormatError: the voices' SID offsets are not the chip's, or a variable lies within a
+        table whose reads the spec states directly.
     """
-    variables = GENERATION_VARS[generation]
+    if tuple(mem[base + VOICE_OFFSETS[generation] + v] for v in range(3)) != (0, 7, 14):
+        raise DmcFormatError(
+            "the voices do not write the SID's voice registers in order"
+        )
+    for table, size in PLAIN[generation]:
+        if any(wild_codes(variables, base, layout[table], size)):
+            raise DmcFormatError(f"player variables lie within the {table} table")
     out = {f"init_{var.name}": initial(var, mem, base) for var in variables}
     for field, table, size in WINDOWS[generation]:
         out[field] = wild_codes(variables, base, layout[table], size)

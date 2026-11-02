@@ -31,7 +31,7 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=3000)
     args = parser.parse_args()
     raw = Path(args.tune).read_bytes()
-    spec = player(raw, args.spec, None)
+    spec = player(raw, args.spec)
     fmt = find_format(raw)
     model = fmt.parser.parse(raw)
     binding = fmt.spec(model)

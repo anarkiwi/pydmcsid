@@ -239,6 +239,15 @@ N95_ORDER_STORE_REL = 0x17D9  # init copies orderlist ptr lo to $17d9,X
 N95_BODY_LO = 0x95
 N95_BODY_HI = 0x719
 N95_DATA_REL = 0x858  # per-tune data starts here; operands >= this are wildcarded
+DMC_PLAY_LOOP_REL = (
+    0x95  # the play body's call of voice 0; voices 1 and 2 follow at +4, +8
+)
+DMC_STEP_REL = 0xB0  # the call of the voice in X: its next row, or its steady call
+DMC_STEADY_REL = 0x1F9  # steady call of the voice in X: a started note or the sustain
+DMC_PULSE_REL = 0x35D  # pulse step of the voice in X, then the rest of its sustain
+DMC_TURN_REL = 0x567  # vibrato turn of the voice in X, then its output
+DMC_MODULATE_REL = 0x41C  # glide, delay or vibrato of the voice in X, then its output
+DMC_OUTPUT_REL = 0x591  # arpeggio step and register write of the voice in X
 N95_WAVE_REL = 0x654  # wave step and register write of the voice in X
 N95_RELOAD_SEED_REL = 0xBF  # self-modified $1016 tempo-reload immediate (wildcard)
 N95_BODY_SHA256 = "43f32e5705a76585f41e1ad001db15a2c4b244a72a77d92a4900008fceb3de4c"

@@ -113,14 +113,31 @@ transpose byte `$a0-$ff` adds `byte - $a0` to each note of the pattern that foll
 The play routine is stated as [`pysidtracker.playspec`](https://github.com/anarkiwi/pysidtracker/blob/main/docs/playspec.md)
 specs in `src/pydmcsid/specs/`: `dmc.play` (init-`$37`, init-`$1d` and `$94a`
 bodies, selected by layout flags), `dmc_a1.play` (`$a1`) and `dmc_95.play` (`$95`).
-`pydmcsid.spec.binding` binds a spec's `layout` from the song's facets and
-operands.
+Each describes what the player does: the orderlist and pattern are cursors over the
+song data, the tempo, note durations and wave steps are counters, a note, a rest and a
+pattern's end are events, and every player variable is a `state`.
+
+`pydmcsid.spec.spec_binding` binds a spec to a tune. The layout it reports holds only
+facts read from the image: the addresses of song data and tables, the build flags and
+the values the tune's init left in each variable (`init_<name>`, a list over the
+voices for a per-voice variable; `pydmcsid.variables` names each variable's bytes in
+the work area). A table read past its end lands on whatever follows it; the work
+area's variables follow the frequency tables, and the instrument and pulse tables in some
+builds, so the binder also reports, for each byte of those tables, the variable that
+lies there (`wild_*`, `id * 4 + voice`) and the spec's `variable` procedure returns that
+state. A variable lying within a table the spec reads directly is a refusal
+(`DmcFormatError`).
+
+Beside the play call, a tune's own code may call the routines of the `$a1` and `$95`
+bodies that run one voice (the volume fade and wave step, the wave step alone, the steady
+call) with the voice in `X`; each is an entry of the spec (`L.call`) sharing the tune's state.
 
 `DmcPlayer(source, subtune)` — a `Song` or `.sid`/`.prg` bytes — is a
 `pysidtracker.playspec.SpecPlayer`, hence a `MemPlayer`: the tune's own init runs on
-the 6502 emulator, then every play call runs the spec on that memory, trapping the
+the 6502 emulator, then every play call runs the spec, trapping the
 resident play body when a wrapper calls it (a benign thunk, the `$937` multispeed
-divider, a subtune selector). `DmcPlayer(..., validate=True)` checks every stream
+divider, a subtune selector). `player.state("voice[0].dur")` reads a variable and
+`player.set_state(...)` sets one. `DmcPlayer(..., validate=True)` checks every stream
 the spec opens against the song grammar and reports malformed ones in
 `player.validator.failures()`.
 
@@ -131,11 +148,20 @@ the sidtrace oracle produces. `iter_register_writes(song, max_frames)` yields on
 shared `py*` register-log convention, via
 `pysidtracker.register_writes_from_player`).
 
-The oracle-marked tests check the players over whole songs: the register grid equals
-the tune's own 6502 run and the sidtrace oracle, and all 64 KiB outside the stack
-page equal the tune's own 6502 run after every call. `tv.validate` proves the
-init-`$37` note-row reader (`voice[x].row_note`, the 6502 routine at `base+$1a2`)
-equal to the code for every initial memory.
+The tests check the players against the tune's own 6502 run: the register grid, and after
+every call each variable the spec keeps against the bytes the 6502 keeps in its work area
+(the oracle-marked tests over whole songs).
+
+### Checking a spec rewrite
+
+`scripts/gate_tunes.py` splits a survey `find` list of the HVSC DMC tunes into one list per
+spec file; `scripts/spec_gate.py record|check` plays them in chunks through pysidtracker's
+`tools/spec_trace.py`, recording a reference spec's audible output (the registers with the
+bits the chip ignores masked, and the gate and test edges of each voice) and checking another
+spec against it. `scripts/spec_diff.py` shows the first call two spec files differ on one tune,
+`scripts/spec_oracle.py` and `scripts/oracle_compare.py` compare a spec with the tune's own 6502
+and `scripts/body_calls.py` lists the routines of the player body that a tune's own code
+calls.
 
 `song.byte_exact()` reports whether the recognised body is one the specs reproduce
 byte-for-byte against the sidtrace oracle: the init-`$37` and the modelled init-`$1d`

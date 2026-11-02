@@ -101,6 +101,7 @@ machine voice[x in 0..3] {
   state instr: u8 = L.init_instr[x];
   state trans: u8 = L.init_trans[x];
   state down: u8 = 0;
+  state shifted: u8 = 0;
   state sus_over: u8 = L.init_sus_over[x];
   state tie: u8 = L.init_tie[x];
   state slide_speed: u8 = L.init_slide_speed[x];
@@ -135,8 +136,8 @@ machine voice[x in 0..3] {
     on order_byte step;
     match c0 {
       0xFF => jump(c1);
-      0xFD => value(trans = c1, down = 0) take 2;
-      0xFC => value(trans = 0, down = c1) take 2;
+      0xFD => end take 2 then trans = c1, down = 0, shifted = 1;
+      0xFC => end take 2 then trans = 0, down = c1, shifted = 1;
       _ => stop;
     }
   }
@@ -255,11 +256,10 @@ machine voice[x in 0..3] {
   }
 
   proc read_row() {
-    let found = false;
-    while !found bound 64 {
-      react orderlist on order_byte() -> found;
-    }
-    if orderlist.c0 == 0xFE {
+    react orderlist on order_byte();
+    if shifted != 0 {
+      shifted := 0;
+    } elif orderlist.c0 == 0xFE {
       active := 0;
       wave_output();
       return;

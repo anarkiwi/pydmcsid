@@ -12,14 +12,14 @@ from __future__ import annotations
 import dataclasses
 from functools import lru_cache
 from importlib import resources
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Tuple
 
 from pysidtracker.formats import SpecBinding
 from pysidtracker.playspec import parse as parse_spec
 
 from pydmcsid import constants
 from pydmcsid.errors import DmcFormatError
-from pydmcsid.variables import GENERATION_VARS, state_layout
+from pydmcsid.variables import VARIABLES, Var, dmc, state_layout
 from pydmcsid.reader import Song, _operand, _play_body_ok, wrapper_body
 
 SPEC_FILES = {
@@ -31,8 +31,8 @@ SPEC_FILES = {
 }
 GENERATIONS = frozenset(SPEC_FILES)
 V1D_BODIES = frozenset({"v1d", "nn"})
+FAMILIES = {"v37": "dmc", "v1d": "dmc", "nn": "dmc"}
 NOTE_CELLS = (0x1012, 0x1015, 0x1034, 0x1035, 0x1036)
-SID_BASE = 0xD400
 
 
 @lru_cache(maxsize=None)
@@ -63,19 +63,21 @@ def _rebased(song: Song, subtune: int) -> Tuple[Song, int]:
     return song, subtune
 
 
-def _note_cells(song: Song, v1d: bool) -> Dict[str, int]:
+def _note_cells(song: Song, v1d: bool) -> Tuple[int, ...]:
+    """The work-area offsets of the note cells: the voices' notes and instruments, the filter
+    routing mask, the vibrato phase and the bend rate."""
     if v1d:
-        note = song.facets()["note_cells"]
-        return {
-            "c_note": note,
-            "c_inst": note + 3,
-            "g_filt": note + 6,
-            "g_vib": note + 7,
-            "g_bend": note + 8,
-        }
-    rel = song.base - 0x1000
-    names = ("c_note", "c_inst", "g_filt", "g_vib", "g_bend")
-    return {name: cell + rel for name, cell in zip(names, NOTE_CELLS)}
+        note = song.facets()["note_cells"] - song.base
+        return note, note + 3, note + 6, note + 7, note + 8
+    return tuple(cell - 0x1000 for cell in NOTE_CELLS)
+
+
+def _play_voices(song: Song) -> List[int]:
+    """The voices the play call runs: those whose call the body's unrolled loop keeps."""
+    mem, base = song.mem, song.base
+    sites = [base + constants.DMC_PLAY_LOOP_REL + 4 * voice for voice in range(3)]
+    unrolled = mem[sites[0] + 3] == 0xE8 and mem[sites[1] + 3] == 0xE8
+    return [v for v in range(3) if not unrolled or mem[sites[v]] == 0x20]
 
 
 def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
@@ -86,9 +88,7 @@ def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
 
     tail = build["tail_d418"]
     onset = build["onset"] != "nop" if v1d else True
-    layout = {
-        "base": song.base,
-        "sid": SID_BASE,
+    return {
         "instr": operand(constants.INSTR_OP),
         "patlo": operand(constants.PATTERN_LO_OP),
         "pathi": operand(constants.PATTERN_HI_OP),
@@ -100,9 +100,13 @@ def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
         "filt_ctrl": operand(constants.FILT_CTRL_OP),
         "step_lo": operand(constants.FILT_STEP_LO_OP),
         "step_hi": operand(constants.FILT_STEP_HI_OP),
-        "zp": operand(constants.ORDER_READ_ZP_OP) & 0xFF,
-        "sr_tmp": operand(constants.V1D_SR_TMP_OP) if v1d else 0,
         "vibseed": operand(constants.VIB_SEED_OP) if v1d else 0,
+        "order_lo": song.base + 0x707,
+        "order_hi": song.base + 0x70A,
+        "filt_bit": song.base + 0x710,
+        "filt_mask": song.base + 0x713,
+        "tempo": song.base + 0x716,
+        "volume": song.base + 0x717,
         "release_clears": int(build["release"] == "clear"),
         "order_jump": int(build["order_loop"] == "jump"),
         "has_tail": int(tail is not None),
@@ -112,11 +116,11 @@ def _binding85(song: Song, v1d: bool) -> Dict[str, Any]:
         "onset_adsr": constants.V1D_ONSET_ADSR_IMM if v1d and onset else 0,
         "pw_shift": build["pw_min_shift"],
         "v1d": int(v1d),
+        "v37": int(not v1d),
+        "run": _play_voices(song),
         "rest_1322": int(v1d and build["rest_tail"] == constants.REST_TAIL_1322),
         "burst_imm": (build["burst_imm"] or 0) if v1d else 0,
     }
-    layout.update(_note_cells(song, v1d))
-    return layout
 
 
 def _binding_a1(song: Song) -> Dict[str, Any]:
@@ -124,9 +128,6 @@ def _binding_a1(song: Song) -> Dict[str, Any]:
         return _operand(song.mem, song.base, off)
 
     return {
-        "base": song.base,
-        "sid": SID_BASE,
-        "zp": operand(constants.A1_ZP_OP) & 0xFF,
         "patlo": operand(constants.A1_PATTERN_LO_OP),
         "pathi": operand(constants.A1_PATTERN_HI_OP),
         "inst": operand(constants.A1_INST_OP),
@@ -150,9 +151,6 @@ def _binding95(song: Song) -> Dict[str, Any]:
         return _operand(song.mem, song.base, off)
 
     return {
-        "base": song.base,
-        "sid": SID_BASE,
-        "zp": operand(constants.N95_ZP_OP) & 0xFF,
         "patlo": operand(constants.N95_PATTERN_LO_OP),
         "pathi": operand(constants.N95_PATTERN_HI_OP),
         "inst": operand(constants.N95_INST_OP),
@@ -187,11 +185,31 @@ def binding(song: Song, subtune: int = 0) -> Tuple[Dict[str, Any], Song, int]:
     return _binding85(song, generation in V1D_BODIES), song, subtune
 
 
-PLAY_CALL, STEADY_CALL, FADE_CALL, WAVE_CALL = range(4)
+(
+    PLAY_CALL,
+    STEADY_CALL,
+    FADE_CALL,
+    WAVE_CALL,
+    MODULATE_CALL,
+    PULSE_CALL,
+    TURN_CALL,
+    STEP_CALL,
+) = range(8)
 
 # The player's routines a tune's own code may call for one voice (X): offset from the base and
 # what the routine does.
+DMC_CALLS = {
+    constants.DMC_STEP_REL: STEP_CALL,
+    constants.DMC_STEADY_REL: STEADY_CALL,
+    constants.DMC_PULSE_REL: PULSE_CALL,
+    constants.DMC_MODULATE_REL: MODULATE_CALL,
+    constants.DMC_TURN_REL: TURN_CALL,
+    constants.DMC_OUTPUT_REL: WAVE_CALL,
+}
 VOICE_CALLS = {
+    "v37": DMC_CALLS,
+    "v1d": DMC_CALLS,
+    "nn": DMC_CALLS,
     "n95": {constants.N95_WAVE_REL: WAVE_CALL},
     "a1": {
         constants.A1_STEADY_REL: STEADY_CALL,
@@ -204,7 +222,16 @@ VOICE_CALLS = {
 def voice_calls(song: Song) -> Dict[int, int]:
     """``{address: call}`` of the routines of the song's body that run for the voice in X."""
     calls = VOICE_CALLS.get(song.variant(), {})
-    return {(song.base + rel) & 0xFFFF: call for rel, call in calls.items()}
+    mem, base = song.mem, song.base
+    if calls is DMC_CALLS and not _voice_step_ok(mem, base):
+        calls = {rel: call for rel, call in calls.items() if call != STEP_CALL}
+    return {(base + rel) & 0xFFFF: call for rel, call in calls.items()}
+
+
+def _voice_step_ok(mem, base: int) -> bool:
+    """Whether the body's per-voice call opens ``LDA voice_on,X`` at its offset."""
+    at = base + constants.DMC_STEP_REL
+    return mem[at] == 0xBD and mem[at + 1] | mem[at + 2] << 8 == base + 0x00C
 
 
 def body_entries(song: Song) -> Iterator[int]:
@@ -222,6 +249,14 @@ def body_entries(song: Song) -> Iterator[int]:
             yield entry
 
 
+def variables_of(body: Song) -> Tuple[Var, ...]:
+    """The player variables of the song's resident body."""
+    generation = body.variant()
+    if generation in V1D_BODIES or generation == "v37":
+        return dmc(*_note_cells(body, generation in V1D_BODIES))
+    return VARIABLES[generation]
+
+
 def spec_binding(song: Song, subtune: int = 0) -> SpecBinding:
     """The :class:`~pysidtracker.formats.SpecBinding` of ``song``'s resident body at
     0-based ``subtune``: its generation's spec, layout and play-body entries.
@@ -232,14 +267,13 @@ def spec_binding(song: Song, subtune: int = 0) -> SpecBinding:
     layout, body, _ = binding(song, subtune)
     entries = frozenset(body_entries(body))
     generation = body.variant()
-
+    family = FAMILIES.get(generation, generation)
+    variables = variables_of(body)
     calls = voice_calls(body)
 
     def bind(view, entry):
-        if generation in GENERATION_VARS:
-            states = state_layout(generation, view, body.base, layout)
-            return {**layout, **states, "call": calls.get(entry, PLAY_CALL)}
-        return layout
+        states = state_layout(family, variables, view, body.base, layout)
+        return {**layout, **states, "call": calls.get(entry, PLAY_CALL)}
 
     return SpecBinding(
         spec(generation),
