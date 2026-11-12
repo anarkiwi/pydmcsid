@@ -8,7 +8,7 @@ frame-for-frame on the jennings oracle.
 import pytest
 
 import pydmcsid
-from pysidtracker.asm6502 import assemble
+from helpers import assemble
 from pysidtracker.header import PSID_MAGIC, RSID_MAGIC
 from pysidtracker.oracle import aligned_match, register_grid
 
