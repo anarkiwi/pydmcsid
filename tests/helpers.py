@@ -9,7 +9,12 @@ variant's code-reading detectors reproduce.  The curated byte-exact-vs-oracle
 subset lives in ``test_oracle_hvsc.py``.
 """
 
+from jennings.assembler import Assembler
+from jennings.devices.mpu6502 import MPU
+
 NREG = 25
+
+assemble = Assembler(MPU()).assemble_program
 
 TUNES = {
     # init-$37 body (Player): canonical, 2-entry dispatch, relocated build, and

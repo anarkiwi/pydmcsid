@@ -4,12 +4,12 @@ import pytest
 
 import pysidtracker
 from pysidtracker import PlayroutineKind
-from pysidtracker.asm6502 import assemble
 from pysidtracker.header import write_psid
 
 import pydmcsid
 from pydmcsid import DmcSidParser
 from pydmcsid.errors import DmcError, DmcFormatError, DmcParseError, SidParseError
+from helpers import assemble
 
 
 def _asm(source, org=0):
