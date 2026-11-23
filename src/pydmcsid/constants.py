@@ -118,8 +118,8 @@ V37_RELEASE_SITE_REL = 0x33D
 # PW-sweep min-bound shift chain ($124b): the stock body forms
 # ``pw_min = inst[2] >> 4`` with four ``LSR A`` (``4a 4a 4a 4a``) before the
 # ``STA $1756,X`` store.  A hand-patched build overwrites the third ``LSR`` with
-# an illegal 2-byte no-op (``$17``; py65 runs it as a 2-byte NOP that eats the
-# following ``LSR``), leaving two ``LSR A`` -> ``pw_min = inst[2] >> 2``.  The
+# an illegal ``SLO zp,X`` (``$17``; a 2-byte instruction whose operand is the
+# following ``LSR`` opcode byte), leaving two ``LSR A`` -> ``pw_min = inst[2] >> 2``.  The
 # shift is read from the code (count of ``LSR A`` before the store site opcode).
 PW_MIN_SHIFT_REL = 0x24B  # first ``LSR A`` of the pw_min shift chain
 PW_MIN_STORE_OP = 0x9D  # STA $1756,X -- terminates the shift chain

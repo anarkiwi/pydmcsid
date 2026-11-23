@@ -665,8 +665,8 @@ def test_pw_min_shift_stock_and_patched():
 
     The stock four-``LSR A`` chain (``4a 4a 4a 4a``) before ``STA $1756,X`` yields
     ``inst[2]>>4`` (shift 4); a build whose third ``LSR`` is overwritten by the
-    illegal 2-byte no-op ``$17`` (which py65 runs as a 2-byte NOP that eats the
-    following ``LSR``) leaves two ``LSR A`` -> ``inst[2]>>2`` (shift 2).
+    illegal ``SLO zp,X`` ``$17`` (a 2-byte instruction that consumes the
+    following ``LSR`` byte as its operand) leaves two ``LSR A`` -> ``inst[2]>>2`` (shift 2).
     """
     from pydmcsid.reader import pw_min_shift
 
