@@ -634,8 +634,8 @@ def pw_min_shift(mem, base: int) -> int:
 
     The stock body computes ``pw_min = inst[2] >> 4`` with four ``LSR A``
     (``4a 4a 4a 4a``) ahead of the ``STA $1756,X`` store; a hand-patched build
-    overwrites the third ``LSR`` with an illegal 2-byte no-op (``$17``, decoded by
-    py65 as a 2-byte NOP that also consumes the following ``LSR``), leaving two
+    overwrites the third ``LSR`` with an illegal ``SLO zp,X`` (``$17``, a 2-byte
+    instruction that takes the following ``LSR`` opcode byte as its operand), leaving two
     ``LSR A`` -> ``inst[2] >> 2``.  The shift is read from the code -- the count of
     ``LSR A`` executed before the store -- so both encodings are modelled exactly
     (the store operand ``$1756`` is fixed work RAM, so the chain sits at a fixed
